@@ -19,7 +19,7 @@ public sealed class LayoutService
 
     private readonly object _gate = new();
     private List<SnapshotEntry> _snapshot = new();
-    private List<PlannedWindow> _lastPlan = new();
+    private List<(WindowInfo Window, WindowRect Requested)> _lastPlan = new();
 
     public bool CanRestore
     {
@@ -176,10 +176,10 @@ public sealed class LayoutService
                 NativeMethods.ShowWindow(victim.Handle, NativeMethods.SW_SHOWMINNOACTIVE);
             }
 
-            PlaceAll(plan, log);
+            var requested = PlaceAll(plan, log);
 
             // 系统会按窗口自己的最小尺寸强行撑大，实测一遍，被撑大的重排一次
-            if (TryDetectClamping(plan, out var clamped))
+            if (TryDetectClamping(requested, out var clamped))
             {
                 foreach (var pair in clamped)
                 {
@@ -198,7 +198,7 @@ public sealed class LayoutService
                 if (retry != null && retry.Count > 0)
                 {
                     log.Add("  retry after clamping");
-                    PlaceAll(retry, log);
+                    requested = PlaceAll(retry, log);
                     plan = retry;
                     notes.Clear();
                     notes.AddRange(retryNotes);
@@ -240,7 +240,10 @@ public sealed class LayoutService
             var message = $"{LayoutNames.Display(kind)}：" + string.Join("，", parts);
             log.Add("  result: " + message);
 
-            _lastPlan = plan;
+            _lastPlan = plan
+                .Where(p => requested.ContainsKey(p.Window.Handle))
+                .Select(p => (p.Window, requested[p.Window.Handle]))
+                .ToList();
 
             return new LayoutResult(true, message, plan.Count, kind, Unmovable: blocked);
         }
@@ -335,7 +338,7 @@ public sealed class LayoutService
             }
 
             _snapshot = new List<SnapshotEntry>();
-            _lastPlan = new List<PlannedWindow>();
+            _lastPlan = new List<(WindowInfo, WindowRect)>();
             return new LayoutResult(true, $"已还原 {restored} 个窗口的位置", restored);
         }
     }
@@ -356,32 +359,32 @@ public sealed class LayoutService
             var log = new List<string> { $"=== {DateTime.Now:yyyy-MM-dd HH:mm:ss} realign" };
             var count = 0;
 
-            foreach (var item in _lastPlan)
+            foreach (var (window, requested) in _lastPlan)
             {
-                if (!NativeMethods.IsWindow(item.Window.Handle) ||
-                    !NativeMethods.GetWindowRect(item.Window.Handle, out var rect))
+                if (!NativeMethods.IsWindow(window.Handle) ||
+                    !NativeMethods.GetWindowRect(window.Handle, out var rect))
                 {
                     continue;
                 }
 
-                if (Math.Abs(rect.Left - item.Rect.Left) <= 2 &&
-                    Math.Abs(rect.Top - item.Rect.Top) <= 2 &&
-                    Math.Abs(rect.Width - item.Rect.Width) <= 2 &&
-                    Math.Abs(rect.Height - item.Rect.Height) <= 2)
+                if (Math.Abs(rect.Left - requested.Left) <= 2 &&
+                    Math.Abs(rect.Top - requested.Top) <= 2 &&
+                    Math.Abs(rect.Width - requested.Width) <= 2 &&
+                    Math.Abs(rect.Height - requested.Height) <= 2)
                 {
                     continue;
                 }
 
-                log.Add($"  drift {DescribeWindow(item.Window.Handle)} " +
-                        $"want={item.Rect.Left},{item.Rect.Top} {item.Rect.Width}x{item.Rect.Height} " +
+                log.Add($"  drift {DescribeWindow(window.Handle)} " +
+                        $"want={requested.Left},{requested.Top} {requested.Width}x{requested.Height} " +
                         $"now={rect.Left},{rect.Top} {rect.Width}x{rect.Height} " +
-                        $"frame={DescribeFrame(item.Window.Handle)}");
+                        $"frame={DescribeFrame(window.Handle)}");
 
-                Place(item.Window.Handle, item.Rect, log);
+                SetBounds(window.Handle, requested, log);
                 count++;
             }
 
-            _lastPlan = new List<PlannedWindow>();
+            _lastPlan = new List<(WindowInfo, WindowRect)>();
 
             if (count > 0)
             {
@@ -868,18 +871,40 @@ public sealed class LayoutService
 
     // ---------------- 执行 ----------------
 
-    private static void PlaceAll(List<PlannedWindow> plan, List<string> log)
+    private static Dictionary<IntPtr, WindowRect> PlaceAll(List<PlannedWindow> plan, List<string> log)
     {
+        var requested = new Dictionary<IntPtr, WindowRect>();
+
         foreach (var item in plan)
         {
-            Place(item.Window.Handle, item.Rect, log);
+            requested[item.Window.Handle] = Place(item.Window.Handle, item.Rect, log);
         }
+
+        return requested;
     }
 
-    private static void Place(IntPtr hWnd, WindowRect rect, List<string> log)
+    /// <summary>把窗口"可见边框"放到 cell 上：普通窗口外面有约 9px 的透明阴影边距，需要补回来。</summary>
+    private static WindowRect Place(IntPtr hWnd, WindowRect cell, List<string> log)
     {
-        var zoomed = NativeMethods.IsZoomed(hWnd);
-        if (zoomed)
+        if (NativeMethods.IsZoomed(hWnd))
+        {
+            Unmaximize(hWnd);
+        }
+
+        var margins = GetFrameMargins(hWnd);
+        var target = new WindowRect(
+            cell.Left - margins.Left,
+            cell.Top - margins.Top,
+            Math.Max(cell.Width + margins.Left + margins.Right, 40),
+            Math.Max(cell.Height + margins.Top + margins.Bottom, 40));
+
+        SetBounds(hWnd, target, log, cell);
+        return target;
+    }
+
+    private static void SetBounds(IntPtr hWnd, WindowRect target, List<string> log, WindowRect? cell = null)
+    {
+        if (NativeMethods.IsZoomed(hWnd))
         {
             Unmaximize(hWnd);
         }
@@ -887,10 +912,10 @@ public sealed class LayoutService
         var ok = NativeMethods.SetWindowPos(
             hWnd,
             IntPtr.Zero,
-            rect.Left,
-            rect.Top,
-            Math.Max(rect.Width, 40),
-            Math.Max(rect.Height, 40),
+            target.Left,
+            target.Top,
+            Math.Max(target.Width, 40),
+            Math.Max(target.Height, 40),
             NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
 
         var actual = "?";
@@ -899,11 +924,36 @@ public sealed class LayoutService
             actual = $"{after.Left},{after.Top} {after.Width}x{after.Height}";
         }
 
-        log.Add($"  place {DescribeWindow(hWnd)} zoomed={zoomed} " +
-                $"req={rect.Left},{rect.Top} {rect.Width}x{rect.Height} ok={ok} now={actual} " +
+        log.Add($"  place {DescribeWindow(hWnd)} " +
+                (cell is { } c ? $"cell={c.Left},{c.Top} {c.Width}x{c.Height} " : string.Empty) +
+                $"rect={target.Left},{target.Top} {target.Width}x{target.Height} ok={ok} now={actual} " +
                 $"frame={DescribeFrame(hWnd)}");
 
         KeepRounded(hWnd);
+    }
+
+    /// <summary>窗口矩形和 DWM 可见边框之间的透明阴影边距。</summary>
+    private static WindowMargins GetFrameMargins(IntPtr hWnd)
+    {
+        if (!NativeMethods.GetWindowRect(hWnd, out var rect) ||
+            rect.Width <= 0 || rect.Height <= 0 ||
+            NativeMethods.DwmGetWindowAttribute(
+                hWnd,
+                NativeMethods.DWMWA_EXTENDED_FRAME_BOUNDS,
+                out var frame,
+                Marshal.SizeOf<NativeMethods.RECT>()) != 0 ||
+            frame.Width <= 0 || frame.Height <= 0)
+        {
+            return default;
+        }
+
+        return new WindowMargins(
+            Sanitize(frame.Left - rect.Left),
+            Sanitize(frame.Top - rect.Top),
+            Sanitize(rect.Right - frame.Right),
+            Sanitize(rect.Bottom - frame.Bottom));
+
+        static int Sanitize(int value) => Math.Clamp(value, 0, 24);
     }
 
     /// <summary>DWM 认为的可见边框（不含阴影的透明边距）。</summary>
@@ -975,21 +1025,21 @@ public sealed class LayoutService
 
     /// <summary>窗口被系统按最小尺寸撑大了吗？撑大的说明我们估小了。</summary>
     private static bool TryDetectClamping(
-        List<PlannedWindow> plan, out Dictionary<IntPtr, WindowRect> clamped)
+        Dictionary<IntPtr, WindowRect> requested, out Dictionary<IntPtr, WindowRect> clamped)
     {
         clamped = new Dictionary<IntPtr, WindowRect>();
 
-        foreach (var item in plan)
+        foreach (var pair in requested)
         {
-            if (!NativeMethods.IsWindow(item.Window.Handle) ||
-                !NativeMethods.GetWindowRect(item.Window.Handle, out var rect))
+            if (!NativeMethods.IsWindow(pair.Key) ||
+                !NativeMethods.GetWindowRect(pair.Key, out var rect))
             {
                 continue;
             }
 
-            if (rect.Width > item.Rect.Width + 2 || rect.Height > item.Rect.Height + 2)
+            if (rect.Width > pair.Value.Width + 2 || rect.Height > pair.Value.Height + 2)
             {
-                clamped[item.Window.Handle] = new WindowRect(rect.Left, rect.Top, rect.Width, rect.Height);
+                clamped[pair.Key] = new WindowRect(rect.Left, rect.Top, rect.Width, rect.Height);
             }
         }
 
@@ -1001,6 +1051,8 @@ public sealed class LayoutService
     private readonly record struct SizeLimits(int Width, int Height);
 
     private readonly record struct Floors(int Width, int Height);
+
+    private readonly record struct WindowMargins(int Left, int Top, int Right, int Bottom);
 
     private sealed record PlannedWindow(WindowInfo Window, WindowRect Rect);
 
