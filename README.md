@@ -1,5 +1,7 @@
 # 窗口布局 · Window Layout
 
+<img src="src/WindowLayout.UI/Assets/icon-preview.png" width="88" align="right" alt="icon" />
+
 一个用**全局热键**快速切换桌面窗口布局的小工具：层叠、左右并排、上下堆叠、网格平铺、主窗在左，外加一键还原。
 
 前端是 **WinUI 3**（未打包 / unpackaged），内核是纯 Win32 互操作，不依赖 PowerShell、不需要管理员权限。
@@ -100,6 +102,19 @@ src/WindowLayout.UI/          WinUI 3 前端
 - 排完 600ms 后再校验一次：有些应用（Chromium/Electron 系）收到尺寸变化后会自己微调窗口，偏移超过 2px 的会被放回格子。
 - 放不下时不会擅自降级：核心返回"最少需要最小化几个（从 Z 序最底层数起）"，界面弹窗询问；选最小化的话，`Ctrl+Alt+0` 还原时会把它们取消最小化。
 - 取消最大化用 `SetWindowPlacement(SW_SHOWNOACTIVATE)`（不抢焦点），并在排完后把 `DWMWA_WINDOW_CORNER_PREFERENCE` 设回圆角 —— 避免 Win11 把"最大化时的方角"留在普通窗口上；应用自己声明方角（`DONOTROUND`）的不动。
+
+## 打包
+
+```bat
+package.cmd
+```
+
+产物：`dist\window-layout-v0.1.0-win-x64.zip`（自包含：内置 .NET 8 运行时和 Windows App SDK，解压后约 207 MB、压缩包约 81 MB）。
+
+- 解压后双击 `WindowLayout.exe` 即可运行，目标机器不需要装 .NET 或 Windows App Runtime；
+- 需要操作管理员程序的窗口（如 Windhawk）时，右键「以管理员身份运行」。
+
+> 为什么不做 MSIX：打包应用始终以普通令牌运行，无法提权，Windhawk 这类高完整性窗口就动不了；而且未签名 MSIX 还需要用户先导入证书。
 
 ## 已知限制
 

@@ -25,6 +25,8 @@ public partial class App : Application
             _window = window;
             window.Activate();
 
+            TrySetWindowIcon(window);
+
             var commandLine = Environment.GetCommandLineArgs();
 
             if (commandLine.Any(arg => arg.Equals("--minimized", StringComparison.OrdinalIgnoreCase)))
@@ -50,6 +52,22 @@ public partial class App : Application
         {
             Log("Launch", ex);
             throw;
+        }
+    }
+
+    private static void TrySetWindowIcon(Window window)
+    {
+        try
+        {
+            var icon = Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
+            if (File.Exists(icon))
+            {
+                window.AppWindow.SetIcon(icon);
+            }
+        }
+        catch
+        {
+            // 图标设置失败不影响使用
         }
     }
 
