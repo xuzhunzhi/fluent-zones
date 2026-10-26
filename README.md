@@ -53,6 +53,8 @@ src\WindowLayout.UI\bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\WindowLay
 | .NET | .NET 8 SDK（编译用）；运行时随 .NET 8 桌面运行时 |
 | Windows App SDK | 1.8 运行时（框架依赖，本机已安装） |
 
+> 编译前请先退出正在运行的本程序：Windows 会锁定 `exe` / `dll`，否则会报 `MSB3021`。
+
 **不需要 Visual Studio**：WinUI 3 的 XAML 编译器由 `Microsoft.WindowsAppSDK` NuGet 包提供，`dotnet build` 即可完成。`build.cmd` 会优先使用 `%USERPROFILE%\.dotnet\dotnet.exe`（本机安装的用户级 SDK），否则回退到 PATH 里的 `dotnet`。
 
 ## 实现要点
