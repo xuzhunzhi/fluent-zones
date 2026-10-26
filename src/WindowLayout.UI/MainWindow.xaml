@@ -1,0 +1,157 @@
+<Window
+    x:Class="WindowLayout.UI.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid x:Name="RootGrid">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 自绘标题栏 -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Height="44" Padding="16,0,12,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
+                <FontIcon Glyph="&#xE8A9;" FontSize="15"
+                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                <TextBlock Text="窗口布局" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="14" />
+                <TextBlock Text="Window Layout" Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" />
+            </StackPanel>
+        </Grid>
+
+        <ScrollViewer x:Name="ContentScroller" Grid.Row="1" IsTabStop="True"
+                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel MaxWidth="920" Padding="24,4,24,24" Spacing="18">
+
+                <!-- 布局卡片 -->
+                <StackPanel Spacing="10">
+                    <TextBlock Text="布局" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <Grid x:Name="LayoutCardsHost" ColumnSpacing="10" RowSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                    </Grid>
+                </StackPanel>
+
+                <!-- 选项 -->
+                <StackPanel Spacing="10">
+                    <TextBlock Text="选项" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="0">
+
+                            <Grid Padding="0,10" ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="200" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="窗口间距" />
+                                    <TextBlock Text="并排 / 网格时窗口之间留出的空隙"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <Slider x:Name="GapSlider" Grid.Column="1" Minimum="0" Maximum="40"
+                                        StepFrequency="1" VerticalAlignment="Center"
+                                        ValueChanged="GapSlider_ValueChanged" />
+                                <TextBlock x:Name="GapValueText" Grid.Column="2" Text="0 px"
+                                           VerticalAlignment="Center" MinWidth="48"
+                                           Style="{StaticResource CaptionTextBlockStyle}" />
+                            </Grid>
+
+                            <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                            <Grid Padding="0,10" ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="作用范围" />
+                                    <TextBlock Text="“鼠标所在显示器”只会动当前屏幕上的窗口"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <ComboBox x:Name="ScopeCombo" Grid.Column="1" MinWidth="160"
+                                          VerticalAlignment="Center"
+                                          SelectionChanged="ScopeCombo_SelectionChanged">
+                                    <ComboBoxItem Content="鼠标所在显示器" />
+                                    <ComboBoxItem Content="所有显示器" />
+                                </ComboBox>
+                            </Grid>
+
+                            <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                            <Grid Padding="0,10" ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="开机启动" />
+                                    <TextBlock Text="登录 Windows 后在后台静默启动，直接可用热键"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="StartupToggle" Grid.Column="1"
+                                              VerticalAlignment="Center"
+                                              Toggled="StartupToggle_Toggled" />
+                            </Grid>
+
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- 热键 -->
+                <StackPanel Spacing="10">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="全局热键" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <TextBlock Grid.Column="1" VerticalAlignment="Bottom"
+                                   Text="按住 Shift 使用同一组合键 = 作用于所有显示器"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </Grid>
+                    <Border Style="{StaticResource CardBorderStyle}" Padding="16,4">
+                        <StackPanel x:Name="HotkeyRowsHost" Spacing="0" />
+                    </Border>
+                </StackPanel>
+
+                <TextBlock Text="提示：关闭窗口会退出程序；窗口最小化时热键依然生效。"
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 状态栏 -->
+        <Border Grid.Row="2" Padding="16,8" BorderThickness="0,1,0,0"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <FontIcon x:Name="StatusIcon" FontSize="13" Glyph="&#xE946;" VerticalAlignment="Center"
+                          Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock x:Name="StatusText" Text="正在启动…" VerticalAlignment="Center"
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           TextWrapping="Wrap" MaxLines="2" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>
