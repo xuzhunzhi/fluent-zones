@@ -22,6 +22,7 @@ internal static class NativeMethods
     internal const int SW_MAXIMIZE = 3;
 
     internal const int DWMWA_CLOAKED = 14;
+    internal const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
 
     /// <summary>DWMWA_WINDOW_CORNER_PREFERENCE（Win11）</summary>
     internal const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
@@ -190,6 +191,9 @@ internal static class NativeMethods
 
     [DllImport("dwmapi.dll")]
     internal static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
 
     [DllImport("user32.dll")]
     internal static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);

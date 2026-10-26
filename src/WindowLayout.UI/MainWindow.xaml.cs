@@ -791,6 +791,16 @@ public sealed partial class MainWindow : Window
             if (result.Success)
             {
                 HighlightCard(result.Kind ?? kind);
+
+                // 有些应用会在收到尺寸变化后自己微调窗口，过一会儿再扶正一次
+                await Task.Delay(600);
+                var fixedCount = _layouts.RealignDrifted();
+                if (fixedCount > 0)
+                {
+                    UpdateStatus(
+                        result.Message + $"（已扶正 {fixedCount} 个自行偏移的窗口）",
+                        StatusLevel.Success);
+                }
             }
 
             var blocked = result.Unmovable?.Where(w => w.CannotMove).ToList();

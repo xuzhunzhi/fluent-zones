@@ -19,6 +19,7 @@ public sealed class LayoutService
 
     private readonly object _gate = new();
     private List<SnapshotEntry> _snapshot = new();
+    private List<PlannedWindow> _lastPlan = new();
 
     public bool CanRestore
     {
@@ -239,6 +240,8 @@ public sealed class LayoutService
             var message = $"{LayoutNames.Display(kind)}：" + string.Join("，", parts);
             log.Add("  result: " + message);
 
+            _lastPlan = plan;
+
             return new LayoutResult(true, message, plan.Count, kind, Unmovable: blocked);
         }
     }
@@ -332,7 +335,60 @@ public sealed class LayoutService
             }
 
             _snapshot = new List<SnapshotEntry>();
+            _lastPlan = new List<PlannedWindow>();
             return new LayoutResult(true, $"已还原 {restored} 个窗口的位置", restored);
+        }
+    }
+
+    /// <summary>
+    /// 排完过一会儿再检查一次：有些应用（Chromium/Electron 系）会在收到尺寸变化后自己微调窗口，
+    /// 导致和相邻窗口差几像素。这里把偏移超过 2px 的窗口重新放回格子。
+    /// </summary>
+    public int RealignDrifted()
+    {
+        lock (_gate)
+        {
+            if (_lastPlan.Count == 0)
+            {
+                return 0;
+            }
+
+            var log = new List<string> { $"=== {DateTime.Now:yyyy-MM-dd HH:mm:ss} realign" };
+            var count = 0;
+
+            foreach (var item in _lastPlan)
+            {
+                if (!NativeMethods.IsWindow(item.Window.Handle) ||
+                    !NativeMethods.GetWindowRect(item.Window.Handle, out var rect))
+                {
+                    continue;
+                }
+
+                if (Math.Abs(rect.Left - item.Rect.Left) <= 2 &&
+                    Math.Abs(rect.Top - item.Rect.Top) <= 2 &&
+                    Math.Abs(rect.Width - item.Rect.Width) <= 2 &&
+                    Math.Abs(rect.Height - item.Rect.Height) <= 2)
+                {
+                    continue;
+                }
+
+                log.Add($"  drift {DescribeWindow(item.Window.Handle)} " +
+                        $"want={item.Rect.Left},{item.Rect.Top} {item.Rect.Width}x{item.Rect.Height} " +
+                        $"now={rect.Left},{rect.Top} {rect.Width}x{rect.Height} " +
+                        $"frame={DescribeFrame(item.Window.Handle)}");
+
+                Place(item.Window.Handle, item.Rect, log);
+                count++;
+            }
+
+            _lastPlan = new List<PlannedWindow>();
+
+            if (count > 0)
+            {
+                LayoutLog.Write(log);
+            }
+
+            return count;
         }
     }
 
@@ -844,9 +900,25 @@ public sealed class LayoutService
         }
 
         log.Add($"  place {DescribeWindow(hWnd)} zoomed={zoomed} " +
-                $"req={rect.Left},{rect.Top} {rect.Width}x{rect.Height} ok={ok} now={actual}");
+                $"req={rect.Left},{rect.Top} {rect.Width}x{rect.Height} ok={ok} now={actual} " +
+                $"frame={DescribeFrame(hWnd)}");
 
         KeepRounded(hWnd);
+    }
+
+    /// <summary>DWM 认为的可见边框（不含阴影的透明边距）。</summary>
+    private static string DescribeFrame(IntPtr hWnd)
+    {
+        if (NativeMethods.DwmGetWindowAttribute(
+                hWnd,
+                NativeMethods.DWMWA_EXTENDED_FRAME_BOUNDS,
+                out var frame,
+                Marshal.SizeOf<NativeMethods.RECT>()) != 0)
+        {
+            return "?";
+        }
+
+        return $"{frame.Left},{frame.Top} {frame.Width}x{frame.Height}";
     }
 
     private static string DescribeWindow(IntPtr hWnd)
