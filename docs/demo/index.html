@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Fluent Zones · 交互原型</title>
+<style>
+  :root{
+    --accent:#4c8dff; --accent-2:#2453d6; --bg:#eef1f6; --card:#ffffff;
+    --stroke:#e2e6ee; --text:#1b1f27; --muted:#68707d; --gap:6px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.5 "Segoe UI Variable","Segoe UI","Microsoft YaHei UI",sans-serif;overflow:hidden}
+  .app{display:flex;height:100%}
+  aside{width:270px;flex:none;background:#fbfcfe;border-right:1px solid var(--stroke);
+    padding:14px 12px;display:flex;flex-direction:column;gap:12px;overflow:auto}
+  h1{font-size:15px;margin:0;display:flex;align-items:center;gap:8px}
+  h1 .dot{width:18px;height:18px;border-radius:5px;background:linear-gradient(145deg,var(--accent),var(--accent-2))}
+  h1 small{font-weight:400;color:var(--muted);font-size:11px}
+  .hint{color:var(--muted);font-size:11px;margin:0}
+  .group{display:flex;flex-direction:column;gap:6px}
+  button{font:inherit;text-align:left;border:1px solid var(--stroke);background:var(--card);
+    border-radius:8px;padding:8px 10px;cursor:pointer;display:flex;justify-content:space-between;
+    align-items:center;gap:8px;transition:.15s;color:var(--text)}
+  button:hover{border-color:#c9d6ef;background:#f5f8ff}
+  button.on{border-color:var(--accent);background:#eef4ff;color:#1c3f8f}
+  kbd{font:11px/1 Consolas,monospace;color:var(--muted);background:#f1f3f8;
+    border:1px solid var(--stroke);border-radius:4px;padding:2px 5px;white-space:nowrap}
+  .row{display:flex;gap:6px}
+  .row button{flex:1;justify-content:center}
+  label{font-size:12px;color:var(--muted)}
+  select{font:inherit;border:1px solid var(--stroke);border-radius:7px;padding:6px;background:#fff}
+  .queue{margin-top:auto;border-top:1px solid var(--stroke);padding-top:10px;font-size:11px;color:var(--muted)}
+  .queue b{color:var(--text);font-weight:600}
+  .queue ol{margin:6px 0 0;padding-left:18px;max-height:150px;overflow:auto}
+  main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .desk{position:relative;flex:1;margin:12px;border-radius:10px;overflow:hidden;
+    background:
+      radial-gradient(1200px 600px at 20% -10%, #dfe8ff 0%, transparent 60%),
+      linear-gradient(160deg,#eef3fb,#e6ecf7 60%,#dfe7f4);
+    border:1px solid var(--stroke)}
+  .win{position:absolute;border-radius:10px;background:var(--card);overflow:hidden;
+    border:1px solid #d6dbe6;box-shadow:0 10px 24px rgba(21,40,82,.14),0 2px 6px rgba(21,40,82,.08);
+    display:flex;flex-direction:column;transition:box-shadow .15s}
+  .win.front{box-shadow:0 18px 42px rgba(21,40,82,.22),0 4px 10px rgba(21,40,82,.12)}
+  .bar{height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 10px;
+    background:linear-gradient(180deg,#fdfdff,#f5f7fb);border-bottom:1px solid #e7ebf3;cursor:default}
+  .ico{width:12px;height:12px;border-radius:3px}
+  .t{font-size:12px;color:#2a3040;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .body{flex:1;background:
+    repeating-linear-gradient(45deg,#fafbfe 0 10px,#f5f7fc 10px 20px);
+    display:flex;align-items:center;justify-content:center;color:#b9c2d2;font-size:12px}
+  .divider{position:absolute;z-index:9000;background:var(--accent);opacity:.0;border-radius:2px;
+    transition:opacity .12s}
+  .zones .divider{opacity:.85}
+  .divider.h{cursor:col-resize}
+  .divider.v{cursor:row-resize}
+  .divider::after{content:"";position:absolute;inset:-4px}
+  .status{height:34px;flex:none;display:flex;align-items:center;justify-content:space-between;
+    padding:0 16px;border-top:1px solid var(--stroke);background:#fbfcfe;font-size:12px;color:var(--muted)}
+  .status b{color:var(--text)}
+  .toast{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    background:rgba(23,28,38,.88);color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;
+    pointer-events:none;opacity:0;transition:.2s;z-index:100000}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1><span class="dot"></span>Fluent Zones <small>交互原型</small></h1>
+    <p class="hint">侧栏按钮 = 对应的全局热键；分区模式下可以拖蓝色分隔线。</p>
+
+    <div class="group">
+      <button data-mode="cascade">层叠窗口 <kbd>Ctrl+Alt+1</kbd></button>
+      <button data-mode="columns">左右并排 <kbd>Ctrl+Alt+2</kbd></button>
+      <button data-mode="rows">上下堆叠 <kbd>Ctrl+Alt+3</kbd></button>
+      <button data-mode="grid">智能网格 <kbd>Ctrl+Alt+4</kbd></button>
+      <button data-mode="mainleft">主窗在左 <kbd>Ctrl+Alt+5</kbd></button>
+      <button id="restore">还原布局 <kbd>Ctrl+Alt+0</kbd></button>
+    </div>
+
+    <div class="group">
+      <div class="row">
+        <button id="zones" style="flex:1">分区模式 <kbd>Ctrl+Alt+Z</kbd></button>
+      </div>
+      <div class="row">
+        <button id="rotate" style="flex:1">队列轮换 <kbd>Ctrl+Alt+Tab</kbd></button>
+      </div>
+      <div class="row">
+        <button id="newwin" style="flex:1">新开窗口</button>
+        <button id="reset" style="flex:1">重置桌面</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <label for="policy">槽位策略</label>
+      <select id="policy">
+        <option value="dynamic">动态分配（默认）</option>
+        <option value="fixed">固定 N 格</option>
+      </select>
+    </div>
+
+    <div class="queue">
+      <div>窗口队列：<b id="qcount">10</b> 个</div>
+      <ol id="qlist"></ol>
+    </div>
+  </aside>
+
+  <main>
+    <div class="desk" id="desk"></div>
+    <div class="status">
+      <span id="status">就绪：先试一个布局，再进分区模式拖分隔线</span>
+      <span id="meta">10 个窗口 · 动态分配</span>
+    </div>
+  </main>
+</div>
+
+<script>
+const DESK = document.getElementById('desk');
+const STATUS = document.getElementById('status');
+const META = document.getElementById('meta');
+const QLIST = document.getElementById('qlist');
+const QCOUNT = document.getElementById('qcount');
+
+const TITLES = [
+  ['OpenCode', '#6b8afd'], ['Edge', '#2fb344'], ['FlClash', '#f0a11a'],
+  ['文件资源管理器', '#e6b422'], ['DeepSeek Harness', '#8b5cf6'],
+  ['QQ', '#12b7f5'], ['微信', '#22c55e'], ['Notepad', '#64748b'],
+  ['计算器', '#0ea5e9'], ['设置', '#94a3b8']
+];
+
+let wins = [];
+let queue = [];
+let mode = 'none';
+let tree = null;
+let gap = 6;
+let snapshot = null;
+let zonesOn = false;
+let z = 10;
+let pendingEvicted = [];
+
+const GAP = () => gap;
+
+function resetAll() {
+  wins = TITLES.map((t, i) => ({
+    id: 'w' + i, title: t[0], color: t[1],
+    x: 40 + (i % 5) * 90 + Math.random() * 40,
+    y: 30 + Math.floor(i / 5) * 120 + Math.random() * 50,
+    w: 420 + Math.random() * 140,
+    h: 300 + Math.random() * 80
+  }));
+  queue = wins.map(w => w.id);
+  mode = 'none'; tree = null; snapshot = null; zonesOn = false; pendingEvicted = [];
+  document.getElementById('zones').classList.remove('on');
+  DESK.classList.remove('zones');
+  render(true);
+  setStatus('就绪：先试一个布局，再进分区模式拖分隔线');
+}
+
+function deskRect() {
+  return { x: 0, y: 0, w: DESK.clientWidth, h: DESK.clientHeight };
+}
+
+function chain(n, dir, offset = 0) {
+  if (n <= 1) return { type: 'leaf', slot: offset };
+  return { type: 'split', dir, ratio: 1 / n, a: { type: 'leaf', slot: offset }, b: chain(n - 1, dir, offset + 1) };
+}
+
+function buildTree(mode, n) {
+  if (n <= 1) return { type: 'leaf', slot: 0 };
+  if (mode === 'columns') return chain(n, 'h');
+  if (mode === 'rows') {
+    const left = Math.ceil(n / 2), right = n - left;
+    return { type: 'split', dir: 'h', ratio: 0.55, a: chain(left, 'v', 0), b: chain(right, 'v', left) };
+  }
+  if (mode === 'grid') {
+    if (n === 2) return { type: 'split', dir: 'h', ratio: 0.62, a: { type: 'leaf', slot: 0 }, b: { type: 'leaf', slot: 1 } };
+    if (n === 3) return { type: 'split', dir: 'h', ratio: 0.62, a: { type: 'leaf', slot: 0 }, b: chain(2, 'v', 1) };
+    return {
+      type: 'split', dir: 'v', ratio: 0.62,
+      a: { type: 'split', dir: 'h', ratio: 0.62, a: { type: 'leaf', slot: 0 }, b: { type: 'leaf', slot: 1 } },
+      b: chain(n - 2, 'h', 2)
+    };
+  }
+  if (mode === 'mainleft') {
+    return { type: 'split', dir: 'h', ratio: 0.55, a: { type: 'leaf', slot: 0 }, b: chain(n - 1, 'v', 1) };
+  }
+  return chain(n, 'h');
+}
+
+function layoutNode(node, r, out) {
+  if (!node) return;
+  if (node.type === 'leaf') { out[node.slot] = r; return; }
+  const g = GAP();
+  if (node.dir === 'h') {
+    const usable = Math.max(r.w - g, 2);
+    const w = Math.round(usable * node.ratio);
+    layoutNode(node.a, { x: r.x, y: r.y, w, h: r.h }, out);
+    layoutNode(node.b, { x: r.x + w + g, y: r.y, w: usable - w, h: r.h }, out);
+  } else {
+    const usable = Math.max(r.h - g, 2);
+    const h = Math.round(usable * node.ratio);
+    layoutNode(node.a, { x: r.x, y: r.y, w: r.w, h }, out);
+    layoutNode(node.b, { x: r.x, y: r.y + h + g, w: r.w, h: usable - h }, out);
+  }
+}
+
+function collectDividers(node, r, out) {
+  if (!node || node.type === 'leaf') return;
+  const g = GAP();
+  if (node.dir === 'h') {
+    const usable = Math.max(r.w - g, 2);
+    const w = Math.round(usable * node.ratio);
+    out.push({ node, dir: 'h', region: r, x: r.x + w + g / 2 });
+    layoutNodeSplitRegions(node, r, out);
+  } else {
+    const usable = Math.max(r.h - g, 2);
+    const h = Math.round(usable * node.ratio);
+    out.push({ node, dir: 'v', region: r, y: r.y + h + g / 2 });
+    layoutNodeSplitRegionsV(node, r, out);
+  }
+}
+
+// 递归收集子分隔线
+function layoutNodeSplitRegions(node, r, out) {
+  const g = GAP();
+  const usable = Math.max(r.w - g, 2);
+  const w = Math.round(usable * node.ratio);
+  collectDividers(node.a, { x: r.x, y: r.y, w, h: r.h }, out);
+  collectDividers(node.b, { x: r.x + w + g, y: r.y, w: usable - w, h: r.h }, out);
+}
+function layoutNodeSplitRegionsV(node, r, out) {
+  const g = GAP();
+  const usable = Math.max(r.h - g, 2);
+  const h = Math.round(usable * node.ratio);
+  collectDividers(node.a, { x: r.x, y: r.y, w: r.w, h }, out);
+  collectDividers(node.b, { x: r.x, y: r.y + h + g, w: r.w, h: usable - h }, out);
+}
+
+function render(messy = false) {
+  const area = deskRect();
+  DESK.innerHTML = '';
+
+  if (mode === 'none' || messy) {
+    wins.forEach(w => drawWin(w, () => { w.z = ++z; render(!!snapshot && mode === 'none'); }));
+  } else if (mode === 'cascade') {
+    const n = queue.length;
+    const w = Math.round(area.w * 0.72), h = Math.round(area.h * 0.72);
+    const step = n > 1 ? Math.min(28, Math.floor((Math.min(area.w - w, area.h - h)) / (n - 1))) : 0;
+    queue.forEach((id, i) => {
+      const win = wins.find(x => x.id === id);
+      win.z = 100 + (n - i);
+      drawWin({ ...win, x: i * step, y: i * step, w, h }, null, i === 0);
+    });
+  } else {
+    const n = Math.min(queue.length, 9);
+    const out = [];
+    layoutNode(tree, area, out);
+    for (let i = 0; i < n; i++) {
+      const win = wins.find(x => x.id === queue[i]);
+      const r = out[i] || { x: 0, y: 0, w: 0, h: 0 };
+      drawWin({ ...win, x: r.x, y: r.y, w: r.w, h: r.h });
+    }
+  }
+
+  if (zonesOn && mode !== 'none' && mode !== 'cascade') {
+    const d = [];
+    collectDividers(tree, area, d);
+    d.forEach((dv, i) => {
+      const el = document.createElement('div');
+      el.className = 'divider ' + dv.dir;
+      el.style.cssText = dv.dir === 'h'
+        ? `left:${dv.x - 1.5}px;top:${dv.region.y}px;width:3px;height:${dv.region.h}px`
+        : `left:${dv.region.x}px;top:${dv.y - 1.5}px;width:${dv.region.w}px;height:3px`;
+      el.dataset.index = i;
+      el.addEventListener('mousedown', e => startDrag(e, dv));
+      DESK.appendChild(el);
+    });
+  }
+
+  updateQueue();
+  META.textContent = `${wins.length} 个窗口 · ${document.getElementById('policy').value === 'dynamic' ? '动态分配' : '固定槽位'}`;
+}
+
+function drawWin(w, onFocus, front) {
+  const el = document.createElement('div');
+  el.className = 'win' + (front ? ' front' : '');
+  el.style.cssText = `left:${w.x}px;top:${w.y}px;width:${Math.max(w.w, 40)}px;height:${Math.max(w.h, 30)}px;z-index:${w.z}`;
+  el.innerHTML = `
+    <div class="bar">
+      <span class="ico" style="background:${w.color}"></span>
+      <span class="t">${w.title}</span>
+    </div>
+    <div class="body">${w.title}</div>`;
+  el.addEventListener('mousedown', () => {
+    w.z = ++z;
+    el.style.zIndex = w.z;
+    [...DESK.querySelectorAll('.win')].forEach(n => n.classList.remove('front'));
+    el.classList.add('front');
+  });
+  DESK.appendChild(el);
+}
+
+function applyMode(next) {
+  if (!snapshot) snapshot = capture();
+  mode = next;
+  zonesOn = zonesOn || false;
+  if (next === 'cascade') {
+    tree = null;
+    if (zonesOn) { zonesOn = false; document.getElementById('zones').classList.remove('on'); DESK.classList.remove('zones'); }
+  } else {
+    tree = buildTree(next, Math.min(queue.length, 9));
+  }
+  render();
+  [...document.querySelectorAll('[data-mode]')].forEach(b => b.classList.toggle('on', b.dataset.mode === next));
+  setStatus(`已应用「${label(next)}」——再点分区模式可以拖分隔线`);
+}
+
+function label(m) {
+  return { cascade: '层叠窗口', columns: '左右并排', rows: '上下堆叠', grid: '智能网格', mainleft: '主窗在左' }[m] || m;
+}
+
+function capture() {
+  const map = {};
+  wins.forEach(w => map[w.id] = { x: w.x, y: w.y, w: w.w, h: w.h, z: w.z });
+  return map;
+}
+
+function restore() {
+  if (!snapshot) { setStatus('还没有可还原的布局'); return; }
+  Object.entries(snapshot).forEach(([id, r]) => {
+    const w = wins.find(x => x.id === id);
+    if (w) Object.assign(w, r);
+  });
+  mode = 'none'; tree = null; zonesOn = false;
+  document.getElementById('zones').classList.remove('on');
+  DESK.classList.remove('zones');
+  [...document.querySelectorAll('[data-mode]')].forEach(b => b.classList.remove('on'));
+  snapshot = null;
+  render(true);
+  setStatus('已还原到第一次排布之前的状态（可以再排一次）');
+}
+
+function toggleZones() {
+  if (mode === 'none' || mode === 'cascade') { setStatus('先选一个可拖拽的布局（并排 / 堆叠 / 网格 / 主窗在左）'); return; }
+  zonesOn = !zonesOn;
+  document.getElementById('zones').classList.toggle('on', zonesOn);
+  DESK.classList.toggle('zones', zonesOn);
+  render();
+  setStatus(zonesOn ? '分区模式：拖动蓝色分隔线，两侧窗口同步变化' : '已退出分区模式');
+}
+
+function rotate() {
+  if (!queue.length) return;
+  const shown = queue.shift();
+  queue.push(shown);
+  if (mode === 'cascade' || mode === 'none') { render(); }
+  else { tree = buildTree(mode, Math.min(queue.length, 9)); render(); }
+  const w = wins.find(x => x.id === queue[0]);
+  setStatus(`队列轮换：${w ? w.title : ''} 上屏`);
+}
+
+let drag = null;
+function startDrag(e, dv) {
+  e.preventDefault();
+  drag = { dv };
+  document.addEventListener('mousemove', onDrag);
+  document.addEventListener('mouseup', endDrag);
+}
+function onDrag(e) {
+  if (!drag) return;
+  const r = drag.dv.region;
+  const box = DESK.getBoundingClientRect();
+  if (drag.dv.dir === 'h') {
+    const usable = Math.max(r.w - GAP(), 2);
+    const raw = e.clientX - box.left - r.x;
+    const ratio = Math.min(0.92, Math.max(0.08, raw / usable));
+    drag.dv.node.ratio = ratio;
+  } else {
+    const usable = Math.max(r.h - GAP(), 2);
+    const raw = e.clientY - box.top - r.y;
+    const ratio = Math.min(0.92, Math.max(0.08, raw / usable));
+    drag.dv.node.ratio = ratio;
+  }
+  render();
+}
+function endDrag() {
+  document.removeEventListener('mousemove', onDrag);
+  document.removeEventListener('mouseup', endDrag);
+  if (drag) setStatus('分隔线已调整，两侧窗口同步');
+  drag = null;
+}
+
+function addWindow() {
+  const i = wins.length;
+  const w = {
+    id: 'w' + i, title: '新窗口 ' + (i + 1), color: '#4c8dff',
+    x: 120 + (i % 4) * 60, y: 120 + (i % 3) * 60, w: 460, h: 320, z: ++z
+  };
+  wins.push(w);
+  queue.push(w.id);
+  const policy = document.getElementById('policy').value;
+  if (mode === 'none') { render(true); setStatus('新窗口加入桌面'); return; }
+  if (policy === 'fixed') {
+    pendingEvicted.push(queue[queue.length - 1]);
+    setStatus('固定槽位：新窗口进队列尾部（演示里暂不踢人，槽位数不变）');
+  } else {
+    if (mode !== 'cascade') tree = buildTree(mode, Math.min(queue.length, 9));
+    setStatus('动态分配：布局扩容并装下新窗口');
+  }
+  render();
+}
+
+function updateQueue() {
+  QCOUNT.textContent = queue.length;
+  QLIST.innerHTML = '';
+  queue.slice(0, 12).forEach((id, i) => {
+    const w = wins.find(x => x.id === id);
+    const li = document.createElement('li');
+    li.textContent = (i < 9 && mode !== 'none' ? '▣ ' : '· ') + (w ? w.title : id);
+    QLIST.appendChild(li);
+  });
+}
+
+function setStatus(t) { STATUS.textContent = t; }
+
+document.querySelectorAll('[data-mode]').forEach(btn => {
+  btn.addEventListener('click', () => applyMode(btn.dataset.mode));
+});
+document.getElementById('zones').addEventListener('click', toggleZones);
+document.getElementById('rotate').addEventListener('click', rotate);
+document.getElementById('restore').addEventListener('click', restore);
+document.getElementById('newwin').addEventListener('click', addWindow);
+document.getElementById('reset').addEventListener('click', resetAll);
+document.getElementById('policy').addEventListener('change', () => {
+  META.textContent = `${wins.length} 个窗口 · ${document.getElementById('policy').value === 'dynamic' ? '动态分配' : '固定槽位'}`;
+});
+window.addEventListener('resize', () => render());
+
+resetAll();
+</script>
+</body>
+</html>
