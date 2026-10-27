@@ -313,6 +313,13 @@ function drawWin(w, onFocus, front) {
     </div>
     <div class="body">${w.title}</div>`;
   el.addEventListener('mousedown', (e) => {
+    if (zonesOn && mode === 'cascade') {
+      const i = queue.indexOf(w.id);
+      if (i > 0) { queue.splice(i, 1); queue.unshift(w.id); }
+      render();
+      setStatus('抽到最前：' + w.title);
+      return;
+    }
     w.z = ++z;
     el.style.zIndex = w.z;
     [...DESK.querySelectorAll('.win')].forEach(n => n.classList.remove('front'));
