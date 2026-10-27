@@ -241,6 +241,10 @@ public sealed class ZoneOverlay : IDisposable
                     foreach (var (line, _) in LineRects(ws))
                     {
                         var r = line;
+                        r.Left -= _area.Left;
+                        r.Right -= _area.Left;
+                        r.Top -= _area.Top;
+                        r.Bottom -= _area.Top;
                         NativeMethods.FillRect(hdc, ref r, _accentBrush);
                     }
                 }
