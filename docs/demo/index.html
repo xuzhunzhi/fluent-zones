@@ -30,6 +30,7 @@
   .row button{flex:1;justify-content:center}
   label{font-size:12px;color:var(--muted)}
   select{font:inherit;border:1px solid var(--stroke);border-radius:7px;padding:6px;background:#fff}
+  input[type=number]{font:inherit;border:1px solid var(--stroke);border-radius:7px;padding:6px;background:#fff;width:100%}
   .queue{margin-top:auto;border-top:1px solid var(--stroke);padding-top:10px;font-size:11px;color:var(--muted)}
   .queue b{color:var(--text);font-weight:600}
   .queue ol{margin:6px 0 0;padding-left:18px;max-height:150px;overflow:auto}
@@ -101,6 +102,11 @@
       </select>
     </div>
 
+    <div class="group" id="slotGroup" style="display:none">
+      <label for="slots">固定槽位数（2–9）</label>
+      <input id="slots" type="number" min="2" max="9" value="4" />
+    </div>
+
     <div class="queue">
       <div>窗口队列：<b id="qcount">10</b> 个</div>
       <ol id="qlist"></ol>
@@ -141,6 +147,15 @@ let z = 10;
 let pendingEvicted = [];
 
 const GAP = () => gap;
+
+function slotCount() {
+  const policy = document.getElementById('policy').value;
+  if (policy === 'fixed') {
+    const v = parseInt(document.getElementById('slots').value, 10);
+    return Math.max(2, Math.min(9, isNaN(v) ? 4 : v));
+  }
+  return Math.min(queue.length, 9);
+}
 
 function resetAll() {
   wins = TITLES.map((t, i) => ({
@@ -254,7 +269,7 @@ function render(messy = false) {
       drawWin({ ...win, x: i * step, y: i * step, w, h }, null, i === 0);
     });
   } else {
-    const n = Math.min(queue.length, 9);
+    const n = slotCount();
     const out = [];
     layoutNode(tree, area, out);
     for (let i = 0; i < n; i++) {
@@ -310,7 +325,7 @@ function applyMode(next) {
     tree = null;
     if (zonesOn) { zonesOn = false; document.getElementById('zones').classList.remove('on'); DESK.classList.remove('zones'); }
   } else {
-    tree = buildTree(next, Math.min(queue.length, 9));
+    tree = buildTree(next, slotCount());
   }
   render();
   [...document.querySelectorAll('[data-mode]')].forEach(b => b.classList.toggle('on', b.dataset.mode === next));
@@ -356,7 +371,7 @@ function rotate() {
   const shown = queue.shift();
   queue.push(shown);
   if (mode === 'cascade' || mode === 'none') { render(); }
-  else { tree = buildTree(mode, Math.min(queue.length, 9)); render(); }
+  else { tree = buildTree(mode, slotCount()); render(); }
   const w = wins.find(x => x.id === queue[0]);
   setStatus(`队列轮换：${w ? w.title : ''} 上屏`);
 }
@@ -406,7 +421,7 @@ function addWindow() {
     pendingEvicted.push(queue[queue.length - 1]);
     setStatus('固定槽位：新窗口进队列尾部（演示里暂不踢人，槽位数不变）');
   } else {
-    if (mode !== 'cascade') tree = buildTree(mode, Math.min(queue.length, 9));
+    if (mode !== 'cascade') tree = buildTree(mode, slotCount());
     setStatus('动态分配：布局扩容并装下新窗口');
   }
   render();
@@ -418,7 +433,7 @@ function updateQueue() {
   queue.slice(0, 12).forEach((id, i) => {
     const w = wins.find(x => x.id === id);
     const li = document.createElement('li');
-    li.textContent = (i < 9 && mode !== 'none' ? '▣ ' : '· ') + (w ? w.title : id);
+    li.textContent = (i < slotCount() && mode !== 'none' ? '▣ ' : '· ') + (w ? w.title : id);
     QLIST.appendChild(li);
   });
 }
@@ -433,8 +448,18 @@ document.getElementById('rotate').addEventListener('click', rotate);
 document.getElementById('restore').addEventListener('click', restore);
 document.getElementById('newwin').addEventListener('click', addWindow);
 document.getElementById('reset').addEventListener('click', resetAll);
-document.getElementById('policy').addEventListener('change', () => {
-  META.textContent = `${wins.length} 个窗口 · ${document.getElementById('policy').value === 'dynamic' ? '动态分配' : '固定槽位'}`;
+function onPolicyChange() {
+  const fixed = document.getElementById('policy').value === 'fixed';
+  document.getElementById('slotGroup').style.display = fixed ? '' : 'none';
+  if (mode !== 'none' && mode !== 'cascade') tree = buildTree(mode, slotCount());
+  render();
+  setStatus(fixed ? `固定 ${slotCount()} 格：超出部分排队/踢出` : '动态分配：按窗口数自动扩容');
+}
+
+document.getElementById('policy').addEventListener('change', onPolicyChange);
+document.getElementById('slots').addEventListener('change', () => {
+  if (mode !== 'none' && mode !== 'cascade') tree = buildTree(mode, slotCount());
+  render();
 });
 window.addEventListener('resize', () => render());
 
