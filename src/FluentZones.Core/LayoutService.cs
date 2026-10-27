@@ -166,10 +166,14 @@ public sealed class LayoutService
                     $"{LayoutNames.Display(kind)}：窗口最小尺寸放不下，可以改用层叠（Ctrl+Alt+1）");
             }
 
-            // 先记录旧位置（包含将被最小化的窗口），再动手
-            _snapshot = movable
-                .Select(w => SnapshotEntry.From(w, victims.Contains(w)))
-                .ToList();
+            // 只在还没有快照时记录：Ctrl+Alt+0 要回到"第一次按布局热键之前"的状态，
+            // 之后连续切换布局不覆盖它，直到用户真的还原一次。
+            if (_snapshot.Count == 0)
+            {
+                _snapshot = movable
+                    .Select(w => SnapshotEntry.From(w, victims.Contains(w)))
+                    .ToList();
+            }
 
             foreach (var victim in victims)
             {
@@ -295,7 +299,12 @@ public sealed class LayoutService
     {
         lock (_gate)
         {
-            _snapshot = windows.Select(w => SnapshotEntry.From(w, false)).ToList();
+            // 同 Apply：只在第一次进入分区模式时记录原始位置
+            if (_snapshot.Count == 0)
+            {
+                _snapshot = windows.Select(w => SnapshotEntry.From(w, false)).ToList();
+            }
+
             _lastPlan = new List<(IntPtr, WindowRect)>();
         }
     }

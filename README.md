@@ -127,6 +127,7 @@ package.cmd
 - [布局卡片设置](docs/LAYOUT_SETTINGS.md)：卡片齿轮、每个布局的上限与参数、持久化（规划）
 - [智能网格](docs/GRID.md)：一个主窗 + 环绕小窗的马赛克构图与上限语义（规划）
 - [滚动工作区构想](docs/SCROLLING.md)：左右并排 → 无限循环的横向窗口带（v0.5）
+- [工作区即桌面](docs/DESKTOPS.md)：接管 Alt+Tab / Win+Tab、自绘任务视图、虚拟桌面替代（v0.6）
 
 > 当前状态：v0.1 已发布；v0.2 分区工作区按上述规格重写中。
 
