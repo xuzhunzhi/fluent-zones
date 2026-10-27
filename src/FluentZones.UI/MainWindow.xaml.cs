@@ -13,9 +13,9 @@ using Windows.Foundation;
 using Windows.Graphics;
 using Windows.System;
 using Windows.UI.Core;
-using WindowLayout.Core;
+using FluentZones.Core;
 
-namespace WindowLayout.UI;
+namespace FluentZones.UI;
 
 public sealed partial class MainWindow : Window
 {
@@ -53,8 +53,8 @@ public sealed partial class MainWindow : Window
 
         _settings = SettingsStore.Load();
 
-        Title = "窗口布局";
-        AppWindow.Title = "窗口布局";
+        Title = "Fluent Zones";
+        AppWindow.Title = "Fluent Zones";
         RootGrid.Loaded += (_, _) => FitWindowToWorkArea();
 
         SystemBackdrop = new MicaBackdrop { Kind = MicaKind.BaseAlt };

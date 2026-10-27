@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace WindowLayout.Core;
+namespace FluentZones.Core;
 
 /// <summary>一个热键组合（修饰键 + 虚拟键码），可以与字符串互相转换。</summary>
 public readonly record struct HotkeyCombo(uint Modifiers, uint VirtualKey)

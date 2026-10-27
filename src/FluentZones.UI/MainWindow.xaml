@@ -1,5 +1,5 @@
 <Window
-    x:Class="WindowLayout.UI.MainWindow"
+    x:Class="FluentZones.UI.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -22,8 +22,8 @@
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
                 <FontIcon Glyph="&#xE8A9;" FontSize="15"
                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                <TextBlock Text="窗口布局" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="14" />
-                <TextBlock Text="Window Layout" Style="{StaticResource CaptionTextBlockStyle}"
+                <TextBlock Text="Fluent Zones" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="14" />
+                <TextBlock Text="窗口布局" Style="{StaticResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" />
             </StackPanel>
         </Grid>

@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Win32;
 
-namespace WindowLayout.Core;
+namespace FluentZones.Core;
 
 public sealed class HotkeySetting
 {
@@ -49,12 +49,18 @@ public static class SettingsStore
     };
 
     public static string FolderPath { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FluentZones");
+
+    /// <summary>旧版本（叫 WindowLayout 时）的设置目录，用来做一次性迁移。</summary>
+    private static string LegacyFolderPath { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WindowLayout");
 
     public static string FilePath { get; } = Path.Combine(FolderPath, "settings.json");
 
     public static AppSettings Load()
     {
+        MigrateLegacyFolder();
+
         try
         {
             if (File.Exists(FilePath))
@@ -93,13 +99,36 @@ public static class SettingsStore
             // 写盘失败不影响当前会话
         }
     }
+
+    /// <summary>把旧目录里的设置（和日志）搬过来，只搬一次。</summary>
+    private static void MigrateLegacyFolder()
+    {
+        try
+        {
+            if (Directory.Exists(FolderPath) || !Directory.Exists(LegacyFolderPath))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(FolderPath);
+            foreach (var file in Directory.GetFiles(LegacyFolderPath))
+            {
+                File.Copy(file, Path.Combine(FolderPath, Path.GetFileName(file)));
+            }
+        }
+        catch
+        {
+            // 迁移失败就按默认设置走
+        }
+    }
 }
 
 /// <summary>通过 HKCU\...\Run 实现开机启动（未打包应用最省事的方式）。</summary>
 public static class StartupRegistration
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "WindowLayout";
+    private const string ValueName = "FluentZones";
+    private const string LegacyValueName = "WindowLayout";
 
     public static bool IsEnabled()
     {
@@ -118,6 +147,9 @@ public static class StartupRegistration
     {
         using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
             ?? throw new InvalidOperationException("无法写入开机启动项");
+
+        // 旧名字留下的启动项顺手清掉
+        key.DeleteValue(LegacyValueName, throwOnMissingValue: false);
 
         if (enabled)
         {

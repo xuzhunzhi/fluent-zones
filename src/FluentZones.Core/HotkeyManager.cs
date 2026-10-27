@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 
-namespace WindowLayout.Core;
+namespace FluentZones.Core;
 
 public sealed class HotkeyEventArgs : EventArgs
 {
@@ -25,7 +25,7 @@ public sealed class HotkeyManager : IDisposable
     private readonly Dictionary<int, HotkeyAction> _actions = new();
     private readonly ConcurrentQueue<Action> _commands = new();
     private readonly ManualResetEventSlim _ready = new(false);
-    private readonly string _className = "WindowLayout.HotkeySink." + Guid.NewGuid().ToString("N");
+    private readonly string _className = "FluentZones.HotkeySink." + Guid.NewGuid().ToString("N");
 
     private NativeMethods.WndProc? _wndProc;
     private IntPtr _hwnd;
@@ -46,7 +46,7 @@ public sealed class HotkeyManager : IDisposable
         _thread = new Thread(MessageLoop)
         {
             IsBackground = true,
-            Name = "WindowLayout.Hotkeys",
+            Name = "FluentZones.Hotkeys",
         };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
@@ -211,7 +211,7 @@ public sealed class HotkeyManager : IDisposable
             _hwnd = NativeMethods.CreateWindowEx(
                 0,
                 _className,
-                "WindowLayout Hotkey Sink",
+                "FluentZones Hotkey Sink",
                 0,
                 0, 0, 0, 0,
                 IntPtr.Zero,

@@ -1,8 +1,8 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
-using WindowLayout.Core;
+using FluentZones.Core;
 
-namespace WindowLayout.UI;
+namespace FluentZones.UI;
 
 public partial class App : Application
 {
@@ -76,7 +76,7 @@ public partial class App : Application
         try
         {
             var folder = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WindowLayout");
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FluentZones");
             Directory.CreateDirectory(folder);
             File.AppendAllText(
                 Path.Combine(folder, "startup.log"),

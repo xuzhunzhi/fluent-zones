@@ -1,7 +1,7 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
-namespace WindowLayout.Core;
+namespace FluentZones.Core;
 
 /// <summary>所有用到的 Win32 声明，集中放在这里。</summary>
 internal static class NativeMethods

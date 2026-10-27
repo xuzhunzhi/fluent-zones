@@ -1,13 +1,13 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{32BC89BD-720A-45D1-8064-BD107B92ABB4}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WindowLayout.Core", "src\WindowLayout.Core\WindowLayout.Core.csproj", "{E8E62AF5-EA7B-4ED9-A8DF-D5707746A983}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FluentZones.Core", "src\FluentZones.Core\FluentZones.Core.csproj", "{E8E62AF5-EA7B-4ED9-A8DF-D5707746A983}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WindowLayout.UI", "src\WindowLayout.UI\WindowLayout.UI.csproj", "{CEE2FEC2-0616-4552-B2F7-FCC9AF192B74}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FluentZones.UI", "src\FluentZones.UI\FluentZones.UI.csproj", "{CEE2FEC2-0616-4552-B2F7-FCC9AF192B74}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

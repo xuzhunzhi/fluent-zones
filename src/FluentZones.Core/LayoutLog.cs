@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace WindowLayout.Core;
+namespace FluentZones.Core;
 
 /// <summary>排列过程的简单日志，方便排查"某个窗口为什么没动"。</summary>
 internal static class LayoutLog
@@ -9,7 +9,7 @@ internal static class LayoutLog
 
     public static string FilePath { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "WindowLayout",
+        "FluentZones",
         "layout.log");
 
     public static void Write(IEnumerable<string> lines)

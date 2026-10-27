@@ -6,8 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <CodePage>65001</CodePage>
-    <AssemblyName>WindowLayout.Core</AssemblyName>
-    <RootNamespace>WindowLayout.Core</RootNamespace>
+    <AssemblyName>FluentZones.Core</AssemblyName>
+    <RootNamespace>FluentZones.Core</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace WindowLayout.Core;
+namespace FluentZones.Core;
 
 /// <summary>
 /// 判断某个进程的窗口我们能不能操作。

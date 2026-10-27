@@ -1,4 +1,4 @@
-namespace WindowLayout.Core;
+namespace FluentZones.Core;
 
 public static class LayoutNames
 {

@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace WindowLayout.Core;
+namespace FluentZones.Core;
 
 /// <summary>挑出"值得参与布局"的顶层窗口：可见、有标题、非工具窗、不在其它虚拟桌面。</summary>
 public static class WindowCollector

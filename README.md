@@ -1,8 +1,8 @@
-# 窗口布局 · Window Layout
+# Fluent Zones
 
-<img src="src/WindowLayout.UI/Assets/icon-preview.png" width="88" align="right" alt="icon" />
+<img src="src/FluentZones.UI/Assets/icon-preview.png" width="88" align="right" alt="icon" />
 
-一个用**全局热键**快速切换桌面窗口布局的小工具：层叠、左右并排、上下堆叠、网格平铺、主窗在左，外加一键还原。
+Fluent 风格的 Windows 窗口分区工具：用**全局热键**一键层叠、左右并排、上下堆叠、网格平铺、主窗在左，外加一键还原。后续会加入可拖拽的 zone（分区）概念。
 
 前端是 **WinUI 3**（未打包 / unpackaged），内核是纯 Win32 互操作，不依赖 PowerShell、不需要管理员权限。
 
@@ -37,15 +37,15 @@ run-admin.cmd    :: 以管理员身份启动（要操作管理员程序的窗口
 
 ```powershell
 # 推荐（build.cmd 用的就是这条）
-dotnet build src\WindowLayout.UI\WindowLayout.UI.csproj -c Release -p:Platform=x64
+dotnet build src\FluentZones.UI\FluentZones.UI.csproj -c Release -p:Platform=x64
 
-# 或者用解决方案（Visual Studio 里直接打开 WindowLayout.sln 也可以）
-dotnet build WindowLayout.sln -c Release
+# 或者用解决方案（Visual Studio 里直接打开 FluentZones.sln 也可以）
+dotnet build FluentZones.sln -c Release
 
-src\WindowLayout.UI\bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\WindowLayout.exe
+src\FluentZones.UI\bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\FluentZones.exe
 ```
 
-设置保存在 `%LOCALAPPDATA%\WindowLayout\settings.json`，删掉即可恢复默认热键。
+设置保存在 `%LOCALAPPDATA%\FluentZones\settings.json`，删掉即可恢复默认热键。
 
 ## 环境要求
 
@@ -62,14 +62,14 @@ src\WindowLayout.UI\bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\WindowLay
 ## 实现要点
 
 ```
-src/WindowLayout.Core/        纯 C#，无 UI 依赖
+src/FluentZones.Core/        纯 C#，无 UI 依赖
   NativeMethods.cs            Win32 声明（EnumWindows / SetWindowPos / RegisterHotKey…）
   WindowCollector.cs          挑选"值得排列"的顶层窗口
   LayoutService.cs            布局几何 + 快照/还原
   HotkeyManager.cs            全局热键（独立线程 + 隐藏窗口 + 消息循环）
   HotkeyCombo.cs              热键文本解析 / 格式化
   Settings.cs                 JSON 设置 + 开机启动
-src/WindowLayout.UI/          WinUI 3 前端
+src/FluentZones.UI/          WinUI 3 前端
   App.xaml / MainWindow.xaml  界面与样式
 ```
 
@@ -111,7 +111,7 @@ package.cmd
 
 产物：`dist\window-layout-v0.1.0-win-x64.zip`（自包含：内置 .NET 8 运行时和 Windows App SDK，解压后约 207 MB、压缩包约 81 MB）。
 
-- 解压后双击 `WindowLayout.exe` 即可运行，目标机器不需要装 .NET 或 Windows App Runtime；
+- 解压后双击 `FluentZones.exe` 即可运行，目标机器不需要装 .NET 或 Windows App Runtime；
 - 需要操作管理员程序的窗口（如 Windhawk）时，右键「以管理员身份运行」。
 
 > 为什么不做 MSIX：打包应用始终以普通令牌运行，无法提权，Windhawk 这类高完整性窗口就动不了；而且未签名 MSIX 还需要用户先导入证书。
@@ -119,7 +119,7 @@ package.cmd
 ## 已知限制
 
 - 最小化的窗口不参与排列，也不会被还原。
-- 每次排列都会写一份过程日志到 `%LOCALAPPDATA%\WindowLayout\layout.log`（前台窗口、参与/排除的窗口、`SetWindowPos` 的请求值与实际值），排查"某个窗口为什么没动"时看它。
+- 每次排列都会写一份过程日志到 `%LOCALAPPDATA%\FluentZones\layout.log`（前台窗口、参与/排除的窗口、`SetWindowPos` 的请求值与实际值），排查"某个窗口为什么没动"时看它。
 - 布局放不下时会弹窗询问：最小化最久未使用的 N 个窗口后重排 / 改用层叠 / 取消。
 - 快照只保留最近一次，连续切换布局后 `Ctrl+Alt+0` 回到的是上一次排列之前。
 - 目标进程假死时，`SetWindowPos` 可能会短暂等待。

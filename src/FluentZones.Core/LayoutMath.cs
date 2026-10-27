@@ -1,4 +1,4 @@
-namespace WindowLayout.Core;
+namespace FluentZones.Core;
 
 /// <summary>
 /// 纯计算：在给定总长度里按"每个窗口的最小尺寸"分配尺寸。

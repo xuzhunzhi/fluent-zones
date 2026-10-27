@@ -4,8 +4,8 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
-    <RootNamespace>WindowLayout.UI</RootNamespace>
-    <AssemblyName>WindowLayout</AssemblyName>
+    <RootNamespace>FluentZones.UI</RootNamespace>
+    <AssemblyName>FluentZones</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
@@ -19,6 +19,11 @@
     <LangVersion>latest</LangVersion>
     <CodePage>65001</CodePage>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Version>0.1.0</Version>
+    <AssemblyTitle>Fluent Zones</AssemblyTitle>
+    <Product>Fluent Zones</Product>
+    <Company>XuZhunzhi</Company>
+    <Description>Fluent 风格的 Windows 窗口分区工具</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -30,7 +35,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\WindowLayout.Core\WindowLayout.Core.csproj" />
+    <ProjectReference Include="..\FluentZones.Core\FluentZones.Core.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace WindowLayout.Core;
+namespace FluentZones.Core;
 
 /// <summary>
 /// 布局算法：先读每个窗口自己声明的最小尺寸（WM_GETMINMAXINFO），
