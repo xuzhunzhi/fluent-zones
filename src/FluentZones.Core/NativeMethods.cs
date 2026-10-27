@@ -20,6 +20,22 @@ internal static class NativeMethods
     internal const int SW_SHOWNOACTIVATE = 4;
     internal const int SW_SHOWMINNOACTIVE = 7;
     internal const int SW_MAXIMIZE = 3;
+    internal const int SW_HIDE = 0;
+
+    internal const uint WS_POPUP = 0x80000000;
+    internal const int WS_EX_TOPMOST = 0x00000008;
+    internal const int WS_EX_LAYERED = 0x00080000;
+    internal const uint LWA_COLORKEY = 0x00000001;
+
+    internal const int WM_PAINT = 0x000F;
+    internal const int WM_SETCURSOR = 0x0020;
+    internal const int WM_NCHITTEST = 0x0084;
+    internal const int WM_MOUSEMOVE = 0x0200;
+    internal const int WM_LBUTTONDOWN = 0x0201;
+    internal const int WM_LBUTTONUP = 0x0202;
+
+    internal const int IDC_SIZEWE = 32644;
+    internal const int IDC_SIZENS = 32645;
 
     internal const int DWMWA_CLOAKED = 14;
     internal const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
@@ -63,6 +79,21 @@ internal static class NativeMethods
 
         public int Width => Right - Left;
         public int Height => Bottom - Top;
+
+        public bool Contains(int x, int y) => x >= Left && x < Right && y >= Top && y < Bottom;
+    }
+
+    [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    internal struct PAINTSTRUCT
+    {
+        public IntPtr hdc;
+        public int fErase;
+        public RECT rcPaint;
+        public int fRestore;
+        public int fIncUpdate;
+
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+        public byte[] rgbReserved;
     }
 
     [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
@@ -234,6 +265,39 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("user32.dll")]
+    internal static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    internal static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr BeginPaint(IntPtr hWnd, out PAINTSTRUCT lpPaint);
+
+    [DllImport("user32.dll")]
+    internal static extern bool EndPaint(IntPtr hWnd, ref PAINTSTRUCT lpPaint);
+
+    [DllImport("user32.dll")]
+    internal static extern int FillRect(IntPtr hDC, ref RECT lprc, IntPtr hbr);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateSolidBrush(uint crColor);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr SetCapture(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    internal static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr LoadCursor(IntPtr hInstance, int lpCursorName);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr SetCursor(IntPtr hCursor);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);

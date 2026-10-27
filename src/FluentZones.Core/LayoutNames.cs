@@ -23,12 +23,16 @@ public static class LayoutNames
     };
 }
 
-/// <summary>热键对应的动作，例如 "Cascade"、"Grid:All"、"Restore"。</summary>
-public readonly record struct HotkeyAction(bool IsRestore, LayoutKind Kind, LayoutScope Scope)
+/// <summary>热键对应的动作，例如 "Cascade"、"Grid:All"、"Restore"、"Zones"。</summary>
+public readonly record struct HotkeyAction(bool IsRestore, LayoutKind Kind, LayoutScope Scope, bool IsZones = false)
 {
-    public string DisplayName => IsRestore
-        ? "还原上一次布局"
-        : LayoutNames.Display(Kind) + (Scope == LayoutScope.AllMonitors ? "（所有显示器）" : string.Empty);
+    public static HotkeyAction Zones => new(false, default, LayoutScope.CursorMonitor, true);
+
+    public string DisplayName => IsZones
+        ? "分区模式（拖拽分隔线）"
+        : IsRestore
+            ? "还原上一次布局"
+            : LayoutNames.Display(Kind) + (Scope == LayoutScope.AllMonitors ? "（所有显示器）" : string.Empty);
 
     public static bool TryParse(string? text, out HotkeyAction action)
     {
@@ -52,6 +56,12 @@ public readonly record struct HotkeyAction(bool IsRestore, LayoutKind Kind, Layo
             value = value[..colon];
         }
 
+        if (value.Equals("Zones", StringComparison.OrdinalIgnoreCase))
+        {
+            action = new HotkeyAction(false, default, scope, true);
+            return true;
+        }
+
         if (value.Equals("Restore", StringComparison.OrdinalIgnoreCase))
         {
             action = new HotkeyAction(true, default, scope);
@@ -69,6 +79,11 @@ public readonly record struct HotkeyAction(bool IsRestore, LayoutKind Kind, Layo
 
     public override string ToString()
     {
+        if (IsZones)
+        {
+            return "Zones";
+        }
+
         if (IsRestore)
         {
             return "Restore";

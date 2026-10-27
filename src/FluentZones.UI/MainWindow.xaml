@@ -113,6 +113,23 @@
                                               Toggled="StartupToggle_Toggled" />
                             </Grid>
 
+                            <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                            <Grid Padding="0,10" ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="分区模式" />
+                                    <TextBlock Text="拖动分隔线，两侧窗口一起变（Ctrl+Alt+Z）"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <Button x:Name="ZoneButton" Grid.Column="1" Content="进入分区模式"
+                                        VerticalAlignment="Center" Click="ZoneButton_Click" />
+                            </Grid>
+
                         </StackPanel>
                     </Border>
                 </StackPanel>

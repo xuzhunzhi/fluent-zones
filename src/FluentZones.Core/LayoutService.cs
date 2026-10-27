@@ -19,7 +19,7 @@ public sealed class LayoutService
 
     private readonly object _gate = new();
     private List<SnapshotEntry> _snapshot = new();
-    private List<(WindowInfo Window, WindowRect Requested)> _lastPlan = new();
+    private List<(IntPtr Handle, WindowRect Requested)> _lastPlan = new();
 
     public bool CanRestore
     {
@@ -242,7 +242,7 @@ public sealed class LayoutService
 
             _lastPlan = plan
                 .Where(p => requested.ContainsKey(p.Window.Handle))
-                .Select(p => (p.Window, requested[p.Window.Handle]))
+                .Select(p => (p.Window.Handle, requested[p.Window.Handle]))
                 .ToList();
 
             return new LayoutResult(true, message, plan.Count, kind, Unmovable: blocked);
@@ -289,6 +289,35 @@ public sealed class LayoutService
 
         return (items, note);
     }
+
+    /// <summary>分区模式用：把当前窗口位置记下来，之后 Ctrl+Alt+0 可以整体还原。</summary>
+    public void CaptureSnapshot(IReadOnlyCollection<WindowInfo> windows)
+    {
+        lock (_gate)
+        {
+            _snapshot = windows.Select(w => SnapshotEntry.From(w, false)).ToList();
+            _lastPlan = new List<(IntPtr, WindowRect)>();
+        }
+    }
+
+    /// <summary>按分区树算出来的格子摆放窗口（带阴影边距补偿）。</summary>
+    public void PlaceRects(IEnumerable<(IntPtr Handle, WindowRect Cell)> cells)
+    {
+        lock (_gate)
+        {
+            var log = new List<string>();
+            var requested = new Dictionary<IntPtr, WindowRect>();
+
+            foreach (var (handle, cell) in cells)
+            {
+                requested[handle] = Place(handle, cell, log);
+            }
+
+            _lastPlan = requested.Select(p => (p.Key, p.Value)).ToList();
+        }
+    }
+
+    public WindowRect GetMonitorArea(IntPtr monitor) => GetArea(monitor);
 
     public LayoutResult Restore()
     {
@@ -338,7 +367,7 @@ public sealed class LayoutService
             }
 
             _snapshot = new List<SnapshotEntry>();
-            _lastPlan = new List<(WindowInfo, WindowRect)>();
+            _lastPlan = new List<(IntPtr, WindowRect)>();
             return new LayoutResult(true, $"已还原 {restored} 个窗口的位置", restored);
         }
     }
@@ -359,10 +388,10 @@ public sealed class LayoutService
             var log = new List<string> { $"=== {DateTime.Now:yyyy-MM-dd HH:mm:ss} realign" };
             var count = 0;
 
-            foreach (var (window, requested) in _lastPlan)
+            foreach (var (handle, requested) in _lastPlan)
             {
-                if (!NativeMethods.IsWindow(window.Handle) ||
-                    !NativeMethods.GetWindowRect(window.Handle, out var rect))
+                if (!NativeMethods.IsWindow(handle) ||
+                    !NativeMethods.GetWindowRect(handle, out var rect))
                 {
                     continue;
                 }
@@ -375,16 +404,16 @@ public sealed class LayoutService
                     continue;
                 }
 
-                log.Add($"  drift {DescribeWindow(window.Handle)} " +
+                log.Add($"  drift {DescribeWindow(handle)} " +
                         $"want={requested.Left},{requested.Top} {requested.Width}x{requested.Height} " +
                         $"now={rect.Left},{rect.Top} {rect.Width}x{rect.Height} " +
-                        $"frame={DescribeFrame(window.Handle)}");
+                        $"frame={DescribeFrame(handle)}");
 
-                SetBounds(window.Handle, requested, log);
+                SetBounds(handle, requested, log);
                 count++;
             }
 
-            _lastPlan = new List<(WindowInfo, WindowRect)>();
+            _lastPlan = new List<(IntPtr, WindowRect)>();
 
             if (count > 0)
             {

@@ -38,6 +38,8 @@ public sealed partial class MainWindow : Window
     private bool _hotkeysAvailable;
     private bool _prompting;
     private bool _elevationPrompted;
+    private ZoneOverlay? _zoneOverlay;
+    private ZoneWorkspace? _zoneWorkspace;
 
     private enum StatusLevel
     {
@@ -74,7 +76,18 @@ public sealed partial class MainWindow : Window
             _hotkeys.Start();
             _hotkeysAvailable = true;
             RegisterAllHotkeys();
-            UpdateStatus("就绪：试试 Ctrl+Alt+1 层叠窗口", StatusLevel.Info);
+            if (!_hotkeys.TryRegister(
+                    9000,
+                    new HotkeyCombo(HotkeyCombo.ModControl | HotkeyCombo.ModAlt, 0x5A),
+                    HotkeyAction.Zones,
+                    out var zoneError))
+            {
+                UpdateStatus("分区模式热键 Ctrl+Alt+Z 注册失败：" + zoneError, StatusLevel.Warn);
+            }
+            else
+            {
+                UpdateStatus("就绪：Ctrl+Alt+Z 进入分区模式", StatusLevel.Info);
+            }
         }
         catch (Exception ex)
         {
@@ -136,6 +149,7 @@ public sealed partial class MainWindow : Window
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
+        _zoneOverlay?.Dispose();
         _hotkeys.Dispose();
     }
 
@@ -763,6 +777,11 @@ public sealed partial class MainWindow : Window
 
     private async Task ApplyLayoutAsync(LayoutKind kind, LayoutScope scope)
     {
+        if (_zoneWorkspace != null)
+        {
+            ExitZones();
+        }
+
         try
         {
             var options = new LayoutOptions((int)Math.Round(GapSlider.Value), scope);
@@ -944,6 +963,11 @@ public sealed partial class MainWindow : Window
 
     private void RestoreLayout()
     {
+        if (_zoneWorkspace != null)
+        {
+            ExitZones();
+        }
+
         try
         {
             ShowResult(_layouts.Restore());
@@ -952,6 +976,99 @@ public sealed partial class MainWindow : Window
         {
             UpdateStatus("还原失败：" + ex.Message, StatusLevel.Error);
         }
+    }
+
+    // ---------------- 分区模式 ----------------
+
+    private void ZoneButton_Click(object sender, RoutedEventArgs e) => ToggleZones();
+
+    private void ToggleZones()
+    {
+        try
+        {
+            if (_zoneWorkspace != null)
+            {
+                ExitZones();
+                return;
+            }
+
+            var all = _layouts.GetWindows(CurrentOptions().Scope);
+            if (all.Count < 2)
+            {
+                UpdateStatus("至少需要两个窗口才能进入分区模式", StatusLevel.Warn);
+                return;
+            }
+
+            var monitor = all[0].Monitor;
+            var windows = all.Where(w => w.Monitor == monitor).ToList();
+            if (windows.Count < 2)
+            {
+                windows = all.ToList();
+                monitor = windows[0].Monitor;
+            }
+
+            var area = _layouts.GetMonitorArea(monitor);
+            var kind = windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid;
+            var workspace = ZoneWorkspace.Create(kind, windows, area, CurrentOptions().Gap);
+
+            _layouts.CaptureSnapshot(windows);
+            _zoneWorkspace = workspace;
+
+            EnsureOverlay().Show(workspace);
+            ApplyZone(workspace);
+
+            ZoneButton.Content = "退出分区模式";
+            UpdateStatus(
+                $"分区模式：拖动分隔线同时调整两侧窗口（{windows.Count} 个），Ctrl+Alt+Z 退出",
+                StatusLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            UpdateStatus("进入分区模式失败：" + ex.Message, StatusLevel.Error);
+            ExitZones();
+        }
+    }
+
+    private ZoneOverlay EnsureOverlay()
+    {
+        if (_zoneOverlay != null)
+        {
+            return _zoneOverlay;
+        }
+
+        _zoneOverlay = new ZoneOverlay();
+        _zoneOverlay.Start();
+        _zoneOverlay.Changed += workspace =>
+        {
+            if (DispatcherQueue.HasThreadAccess)
+            {
+                ApplyZone(workspace);
+            }
+            else
+            {
+                DispatcherQueue.TryEnqueue(() => ApplyZone(workspace));
+            }
+        };
+
+        return _zoneOverlay;
+    }
+
+    private void ApplyZone(ZoneWorkspace workspace)
+    {
+        if (_zoneWorkspace == null)
+        {
+            return;
+        }
+
+        _layouts.PlaceRects(workspace.Compute().Select(p => (p.Window.Handle, p.Rect)));
+    }
+
+    private void ExitZones()
+    {
+        _zoneOverlay?.Hide();
+        _zoneWorkspace = null;
+        ZoneButton.Content = "进入分区模式";
+        UpdateStatus("已退出分区模式，Ctrl+Alt+0 可还原到进入前的位置", StatusLevel.Info);
     }
 
     private LayoutOptions CurrentOptions() => new(
@@ -972,17 +1089,15 @@ public sealed partial class MainWindow : Window
 
     private void HandleHotkey(HotkeyAction action)
     {
+        if (action.IsZones)
+        {
+            ToggleZones();
+            return;
+        }
+
         if (action.IsRestore)
         {
-            try
-            {
-                ShowResult(_layouts.Restore());
-            }
-            catch (Exception ex)
-            {
-                UpdateStatus("还原失败：" + ex.Message, StatusLevel.Error);
-            }
-
+            RestoreLayout();
             return;
         }
 
