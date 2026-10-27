@@ -44,6 +44,10 @@
     border:1px solid #d6dbe6;box-shadow:0 10px 24px rgba(21,40,82,.14),0 2px 6px rgba(21,40,82,.08);
     display:flex;flex-direction:column;transition:box-shadow .15s}
   .win.front{box-shadow:0 18px 42px rgba(21,40,82,.22),0 4px 10px rgba(21,40,82,.12)}
+  .ghost{position:fixed;z-index:100001;background:rgba(76,141,255,.92);color:#fff;
+    padding:6px 10px;border-radius:7px;font-size:12px;pointer-events:none;
+    box-shadow:0 8px 20px rgba(21,40,82,.3)}
+  .win{user-select:none}
   .bar{height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 10px;
     background:linear-gradient(180deg,#fdfdff,#f5f7fb);border-bottom:1px solid #e7ebf3;cursor:default}
   .ico{width:12px;height:12px;border-radius:3px}
@@ -308,11 +312,12 @@ function drawWin(w, onFocus, front) {
       <span class="t">${w.title}</span>
     </div>
     <div class="body">${w.title}</div>`;
-  el.addEventListener('mousedown', () => {
+  el.addEventListener('mousedown', (e) => {
     w.z = ++z;
     el.style.zIndex = w.z;
     [...DESK.querySelectorAll('.win')].forEach(n => n.classList.remove('front'));
     el.classList.add('front');
+    startWinDrag(e, w, el);
   });
   DESK.appendChild(el);
 }
@@ -377,6 +382,68 @@ function rotate() {
 }
 
 let drag = null;
+let winDrag = null;
+
+function startWinDrag(e, w, el) {
+  if (!zonesOn || mode === 'none' || mode === 'cascade') return;
+  winDrag = { id: w.id, sx: e.clientX, sy: e.clientY, moved: false, el, ghost: null };
+  document.addEventListener('mousemove', onWinDrag);
+  document.addEventListener('mouseup', endWinDrag);
+}
+
+function onWinDrag(e) {
+  if (!winDrag) return;
+  if (!winDrag.moved && Math.abs(e.clientX - winDrag.sx) + Math.abs(e.clientY - winDrag.sy) < 6) return;
+  winDrag.moved = true;
+  if (!winDrag.ghost) {
+    const src = wins.find(x => x.id === winDrag.id);
+    const g = document.createElement('div');
+    g.className = 'ghost';
+    g.textContent = src ? src.title : '';
+    document.body.appendChild(g);
+    winDrag.ghost = g;
+    winDrag.el.style.opacity = .35;
+  }
+  winDrag.ghost.style.left = (e.clientX + 12) + 'px';
+  winDrag.ghost.style.top = (e.clientY + 12) + 'px';
+}
+
+function targetSlotAt(e) {
+  const box = DESK.getBoundingClientRect();
+  const out = [];
+  layoutNode(tree, deskRect(), out);
+  const x = e.clientX - box.left, y = e.clientY - box.top;
+  for (let i = 0; i < slotCount(); i++) {
+    const r = out[i];
+    if (r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return i;
+  }
+  return -1;
+}
+
+function endWinDrag(e) {
+  document.removeEventListener('mousemove', onWinDrag);
+  document.removeEventListener('mouseup', endWinDrag);
+  if (!winDrag) return;
+  const wd = winDrag;
+  winDrag = null;
+  if (!wd.moved) return;
+
+  const from = queue.indexOf(wd.id);
+  const target = targetSlotAt(e);
+  const title = id => (wins.find(x => x.id === id) || {}).title || id;
+
+  if (from >= 0 && target >= 0 && from < slotCount() && target < slotCount() && from !== target) {
+    const other = queue[target];
+    [queue[from], queue[target]] = [queue[target], queue[from]];
+    setStatus(`交换：${title(wd.id)} ↔ ${title(other)}`);
+  } else {
+    setStatus('没有落在其它槽位上，窗口回原位');
+  }
+
+  if (wd.ghost) wd.ghost.remove();
+  wd.el.style.opacity = 1;
+  render();
+}
 function startDrag(e, dv) {
   e.preventDefault();
   drag = { dv };
