@@ -363,15 +363,18 @@ function restore() {
 }
 
 function toggleZones() {
-  if (mode === 'none' || mode === 'cascade') { setStatus('先选一个可拖拽的布局（并排 / 堆叠 / 网格 / 主窗在左）'); return; }
+  if (mode === 'none') { setStatus('先选一个布局（并排 / 堆叠 / 网格 / 主窗在左 / 层叠）'); return; }
   zonesOn = !zonesOn;
   document.getElementById('zones').classList.toggle('on', zonesOn);
   DESK.classList.toggle('zones', zonesOn);
   render();
-  setStatus(zonesOn ? '分区模式：拖动蓝色分隔线，两侧窗口同步变化' : '已退出分区模式');
+  if (!zonesOn) setStatus('已退出工作区');
+  else if (mode === 'cascade') setStatus('工作区（层叠）：没有分隔线，用「队列轮换」切换前窗');
+  else setStatus('工作区：拖动蓝色分隔线调整，也可以把窗口拖到别的槽位互换');
 }
 
 function rotate() {
+  if (!zonesOn) { setStatus('队列轮换只在工作区开启时可用：先点「分区模式」'); return; }
   if (!queue.length) return;
   const shown = queue.shift();
   queue.push(shown);
