@@ -64,38 +64,40 @@ public sealed class ZoneWorkspace
         return ZoneNode.Split(true, ZoneNode.Leaf(windows[0]), right, 0.55);
     }
 
+    /// <summary>主窗占可用空间的比例，网格平铺的"主窗 + 环绕"构图专用。</summary>
+    private const double MainRatio = 0.62;
+
+    /// <summary>
+    /// 网格平铺：主窗 + 环绕的马赛克构图。
+    /// 2 个窗口竖着一刀（62/38）；3 个及以上把主窗外的窗口按"先对半分给右侧列和底部行、
+    /// 多出来的那块给底部"分成两组，各自独立切分——所以右侧列和底部行的分割线不必等高。
+    /// 1 个窗口铺满。
+    /// </summary>
     private static ZoneNode Grid(IReadOnlyList<WindowInfo> windows)
     {
-        var columns = Math.Min(Math.Max(1, (int)Math.Ceiling(Math.Sqrt(windows.Count))), windows.Count);
-        var rows = (int)Math.Ceiling(windows.Count / (double)columns);
+        var count = windows.Count;
 
-        var rowNodes = new List<ZoneNode>();
-        for (var row = 0; row < rows; row++)
+        if (count == 1)
         {
-            var slice = windows.Skip(row * columns).Take(columns).ToList();
-            if (slice.Count == 0)
-            {
-                break;
-            }
-
-            rowNodes.Add(Chain(slice, horizontal: true));
+            return ZoneNode.Leaf(windows[0]);
         }
 
-        return ChainOfNodes(rowNodes, horizontal: false);
-    }
-
-    private static ZoneNode ChainOfNodes(IReadOnlyList<ZoneNode> nodes, bool horizontal)
-    {
-        if (nodes.Count == 1)
+        if (count == 2)
         {
-            return nodes[0];
+            return ZoneNode.Split(
+                true, ZoneNode.Leaf(windows[0]), ZoneNode.Leaf(windows[1]), MainRatio);
         }
 
-        return ZoneNode.Split(
-            horizontal,
-            nodes[0],
-            ChainOfNodes(nodes.Skip(1).ToList(), horizontal),
-            1.0 / nodes.Count);
+        // 除主窗外的 count-1 个格子：一半放右侧列，一半放底部行，余数给底部
+        var rightCount = (count - 1) / 2;
+        var top = ZoneNode.Split(
+            true,
+            ZoneNode.Leaf(windows[0]),
+            Chain(windows.Skip(1).Take(rightCount).ToList(), horizontal: false),
+            MainRatio);
+
+        var bottom = Chain(windows.Skip(1 + rightCount).ToList(), horizontal: true);
+        return ZoneNode.Split(false, top, bottom, MainRatio);
     }
 
     /// <summary>算出每个窗口的目标矩形（可见边框）。</summary>

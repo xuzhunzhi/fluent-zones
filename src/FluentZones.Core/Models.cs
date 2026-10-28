@@ -47,7 +47,7 @@ public sealed class WindowInfo
     public bool CannotMove { get; init; }
 }
 
-public sealed record LayoutOptions(int Gap, LayoutScope Scope)
+public sealed record LayoutOptions(int Gap, LayoutScope Scope, int GridLimit = AppSettings.GridLimitDefault)
 {
     public static LayoutOptions Default { get; } = new(0, LayoutScope.CursorMonitor);
 }
@@ -59,11 +59,19 @@ public sealed record LayoutResult(
     LayoutKind? Kind = null,
     bool NeedsChoice = false,
     IReadOnlyList<WindowInfo>? SuggestedMinimize = null,
-    IReadOnlyList<WindowInfo>? Unmovable = null)
+    IReadOnlyList<WindowInfo>? Unmovable = null,
+    WindowInfo? SuggestedMain = null)
 {
+    /// <summary>网格放不下，但把 <see cref="SuggestedMain"/> 换到主窗就能排下，等用户确认。</summary>
+    public bool NeedsMainSlot => SuggestedMain != null;
+
     public static LayoutResult Fail(string message) => new(false, message, 0);
 
     /// <summary>放不下，建议最小化这些窗口后重试。</summary>
     public static LayoutResult Choice(LayoutKind kind, IReadOnlyList<WindowInfo> victims) =>
         new(false, "窗口最小尺寸放不下", 0, kind, true, victims);
+
+    /// <summary>放不下，但把这个窗口换到主窗就能排下。</summary>
+    public static LayoutResult MainSlot(LayoutKind kind, WindowInfo window) =>
+        new(false, $"「{window.Title}」声明的最小尺寸较大，可以放到主窗", 0, kind, SuggestedMain: window);
 }

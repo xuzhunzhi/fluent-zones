@@ -15,19 +15,42 @@ public sealed class HotkeySetting
 
 public sealed class AppSettings
 {
+    /// <summary>网格平铺的格数（"最多窗口数"）：默认、下限、上限。</summary>
+    public const int GridLimitDefault = 4;
+    public const int GridLimitMin = 2;
+    public const int GridLimitMax = 6;
+
     public int Gap { get; set; }
 
     public LayoutScope Scope { get; set; } = LayoutScope.CursorMonitor;
 
     public bool StartWithWindows { get; set; }
 
+    /// <summary>各布局的"最多窗口数"，键是 <see cref="LayoutKind"/> 的名字；缺失或 0 表示不限制。</summary>
+    public Dictionary<string, int> LayoutLimits { get; set; } = new();
+
     public List<HotkeySetting> Hotkeys { get; set; } = new();
+
+    /// <summary>取某个布局的上限；没配过就返回 <paramref name="fallback"/>。</summary>
+    public int GetLimit(LayoutKind kind, int fallback = 0) =>
+        LayoutLimits.TryGetValue(kind.ToString(), out var value) && value > 0 ? value : fallback;
+
+    public void SetLimit(LayoutKind kind, int value) => LayoutLimits[kind.ToString()] = value;
+
+    /// <summary>网格格数，范围见 <see cref="GridLimitMin"/> / <see cref="GridLimitMax"/>。</summary>
+    [JsonIgnore]
+    public int GridLimit
+    {
+        get => GetLimit(LayoutKind.Grid, GridLimitDefault);
+        set => SetLimit(LayoutKind.Grid, Math.Clamp(value, GridLimitMin, GridLimitMax));
+    }
 
     public static AppSettings CreateDefault() => new()
     {
         Gap = 0,
         Scope = LayoutScope.CursorMonitor,
         StartWithWindows = false,
+        LayoutLimits = new Dictionary<string, int> { [nameof(LayoutKind.Grid)] = GridLimitDefault },
         Hotkeys = new List<HotkeySetting>
         {
             new() { Action = "Cascade", Combo = "Ctrl+Alt+1" },
@@ -73,6 +96,13 @@ public static class SettingsStore
                     if (settings.Hotkeys.Count == 0)
                     {
                         settings.Hotkeys = AppSettings.CreateDefault().Hotkeys;
+                    }
+
+                    // 老版本的 settings.json 没有 layoutLimits，补上网格默认格数
+                    settings.LayoutLimits ??= new Dictionary<string, int>();
+                    if (!settings.LayoutLimits.ContainsKey(nameof(LayoutKind.Grid)))
+                    {
+                        settings.LayoutLimits[nameof(LayoutKind.Grid)] = AppSettings.GridLimitDefault;
                     }
 
                     return settings;

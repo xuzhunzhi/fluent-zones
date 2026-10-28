@@ -317,6 +317,10 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
+    /// <summary>投递 WM_QUIT，让 GetMessage 返回 0；必须在消息循环所属线程上调用。</summary>
+    [DllImport("user32.dll")]
+    internal static extern void PostQuitMessage(int nExitCode);
+
     // ---- 创建隐藏消息窗口，供全局热键使用 ----
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]

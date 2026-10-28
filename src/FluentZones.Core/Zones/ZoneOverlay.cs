@@ -254,6 +254,8 @@ public sealed class ZoneOverlay : IDisposable
             }
 
             case NativeMethods.WM_DESTROY:
+                // 窗口已销毁，显式退出消息循环（DefWindowProc 不会替我们 PostQuitMessage）
+                NativeMethods.PostQuitMessage(0);
                 return IntPtr.Zero;
         }
 
@@ -374,15 +376,18 @@ public sealed class ZoneOverlay : IDisposable
         }
 
         _thread?.Join(TimeSpan.FromSeconds(2));
+        _hwnd = IntPtr.Zero;   // 窗口已随 WM_DESTROY 销毁，置零避免重复 Dispose 再 PostMessage
 
         if (_keyBrush != IntPtr.Zero)
         {
             NativeMethods.DeleteObject(_keyBrush);
+            _keyBrush = IntPtr.Zero;
         }
 
         if (_accentBrush != IntPtr.Zero)
         {
             NativeMethods.DeleteObject(_accentBrush);
+            _accentBrush = IntPtr.Zero;
         }
 
         _ready.Dispose();

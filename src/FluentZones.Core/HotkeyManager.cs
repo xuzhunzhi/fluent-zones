@@ -282,6 +282,8 @@ public sealed class HotkeyManager : IDisposable
                 return IntPtr.Zero;
 
             case NativeMethods.WM_DESTROY:
+                // 窗口已销毁，显式退出消息循环（DefWindowProc 不会替我们 PostQuitMessage）
+                NativeMethods.PostQuitMessage(0);
                 return IntPtr.Zero;
 
             default:

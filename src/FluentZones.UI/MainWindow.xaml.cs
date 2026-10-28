@@ -70,6 +70,16 @@ public sealed partial class MainWindow : Window
 
         RootGrid.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(OnRootKeyDown), true);
 
+        // 录制热键时窗口失焦（Alt+Tab、点别的程序）就取消录制，
+        // 否则录制状态会一直挂着，全局热键也跟着被静音
+        Activated += (_, e) =>
+        {
+            if (e.WindowActivationState == WindowActivationState.Deactivated)
+            {
+                CancelCapture(silent: true);
+            }
+        };
+
         _hotkeys.HotkeyPressed += OnHotkeyPressed;
         try
         {
@@ -772,10 +782,17 @@ public sealed partial class MainWindow : Window
         Cancel,
     }
 
+    private enum MainSlotChoice
+    {
+        UseMain,
+        Cascade,
+        Cancel,
+    }
+
     private async void ApplyLayout(LayoutKind kind) =>
         await ApplyLayoutAsync(kind, CurrentOptions().Scope);
 
-    private async Task ApplyLayoutAsync(LayoutKind kind, LayoutScope scope)
+    private async Task ApplyLayoutAsync(LayoutKind kind, LayoutScope scope, IntPtr forcedMain = default)
     {
         if (_zoneWorkspace != null)
         {
@@ -784,8 +801,28 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            var options = new LayoutOptions((int)Math.Round(GapSlider.Value), scope);
-            var result = _layouts.Apply(kind, options);
+            var options = new LayoutOptions(
+                (int)Math.Round(GapSlider.Value), scope, _settings.GridLimit);
+            var result = _layouts.Apply(kind, options, mainSlot: forcedMain);
+
+            // 网格装不下，但把声明需求最大的窗口换到主窗就能排：先弹窗问，用户点头才重排，
+            // 不擅自改变窗口位置（也不能退回"均分竖条"那种跟网格无关的排法）
+            if (result.NeedsMainSlot && forcedMain == IntPtr.Zero &&
+                result.SuggestedMain is { } candidate)
+            {
+                switch (await AskMainSlotAsync(kind, candidate))
+                {
+                    case MainSlotChoice.UseMain:
+                        await ApplyLayoutAsync(kind, scope, candidate.Handle);
+                        return;
+                    case MainSlotChoice.Cascade:
+                        result = _layouts.Apply(LayoutKind.Cascade, options);
+                        break;
+                    default:
+                        UpdateStatus("已取消排列", StatusLevel.Info);
+                        return;
+                }
+            }
 
             if (result.NeedsChoice)
             {
@@ -795,7 +832,8 @@ public sealed partial class MainWindow : Window
                 switch (choice)
                 {
                     case FitChoice.Minimize:
-                        result = _layouts.Apply(kind, options, minimizeOldest: victims);
+                        result = _layouts.Apply(
+                            kind, options, minimizeOldest: victims, mainSlot: forcedMain);
                         break;
                     case FitChoice.Cascade:
                         result = _layouts.Apply(LayoutKind.Cascade, options);
@@ -867,6 +905,54 @@ public sealed partial class MainWindow : Window
                 ContentDialogResult.Primary => FitChoice.Minimize,
                 ContentDialogResult.Secondary => FitChoice.Cascade,
                 _ => FitChoice.Cancel,
+            };
+        }
+        finally
+        {
+            _prompting = false;
+        }
+    }
+
+    /// <summary>
+    /// 网格里某个窗口声明的最小尺寸塞不进它分到的格子，但换到主窗就排得下。
+    /// 不擅自搬窗口，交给用户确认（放到主窗 / 改用层叠 / 取消）。
+    /// </summary>
+    private async Task<MainSlotChoice> AskMainSlotAsync(LayoutKind kind, WindowInfo candidate)
+    {
+        if (_prompting)
+        {
+            return MainSlotChoice.Cancel;
+        }
+
+        _prompting = true;
+
+        try
+        {
+            BringWindowToFront();
+
+            var declared = candidate.MinWidth > 0 && candidate.MinHeight > 0
+                ? $"它声明的最小尺寸是 {candidate.MinWidth}×{candidate.MinHeight}，"
+                : string.Empty;
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = "这个窗口更适合放到主窗",
+                Content =
+                    $"{declared}装不进「{LayoutNames.Display(kind)}」给它分的格子。\n\n" +
+                    "把它放到主窗（最大的一块）通常是最合适的做法。",
+                PrimaryButtonText = "放到主窗",
+                SecondaryButtonText = "改用层叠",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            var result = await dialog.ShowAsync();
+            return result switch
+            {
+                ContentDialogResult.Primary => MainSlotChoice.UseMain,
+                ContentDialogResult.Secondary => MainSlotChoice.Cascade,
+                _ => MainSlotChoice.Cancel,
             };
         }
         finally
@@ -1089,6 +1175,12 @@ public sealed partial class MainWindow : Window
 
     private void HandleHotkey(HotkeyAction action)
     {
+        // 录制热键时不响应全局热键，否则改键会顺手把窗口排一遍
+        if (_editingAction != null)
+        {
+            return;
+        }
+
         if (action.IsZones)
         {
             ToggleZones();

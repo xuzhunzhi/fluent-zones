@@ -46,7 +46,8 @@ public sealed class LayoutService
         LayoutKind kind,
         LayoutOptions options,
         IReadOnlyCollection<IntPtr>? restrictTo = null,
-        int minimizeOldest = 0)
+        int minimizeOldest = 0,
+        IntPtr mainSlot = default)
     {
         var log = new List<string>
         {
@@ -56,7 +57,7 @@ public sealed class LayoutService
 
         try
         {
-            return ApplyCore(kind, options, restrictTo, minimizeOldest, log);
+            return ApplyCore(kind, options, restrictTo, minimizeOldest, mainSlot, log);
         }
         finally
         {
@@ -69,6 +70,7 @@ public sealed class LayoutService
         LayoutOptions options,
         IReadOnlyCollection<IntPtr>? restrictTo,
         int minimizeOldest,
+        IntPtr mainSlot,
         List<string> log)
     {
         lock (_gate)
@@ -129,6 +131,8 @@ public sealed class LayoutService
 
             var victims = PickOldest(movable, minimizeOldest);
             var participants = movable.Where(w => !victims.Contains(w)).ToList();
+            ApplyGridLimit(kind, participants, victims, options.GridLimit, log);
+
             if (participants.Count == 0)
             {
                 return new LayoutResult(
@@ -147,10 +151,26 @@ public sealed class LayoutService
             var limits = movable.ToDictionary(w => w.Handle, w => new SizeLimits(w.MinWidth, w.MinHeight));
             var groups = GroupByMonitor(participants);
             var notes = new List<string>();
-            var plan = BuildPlan(kind, groups, gap, limits, notes);
+            var plan = BuildPlan(kind, groups, gap, limits, notes, mainSlot);
 
             if (plan == null)
             {
+                // 网格：先看"把声明需求最大的窗口换到主窗"能不能排下。
+                // 能排下也不擅自换，返回给界面弹窗让用户决定。
+                if (kind == LayoutKind.Grid && mainSlot == IntPtr.Zero && participants.Count > 1)
+                {
+                    var candidate = participants
+                        .OrderByDescending(w => RequiredArea(w, limits))
+                        .First();
+
+                    if (BuildPlan(kind, groups, gap, limits, new List<string>(), candidate.Handle) != null)
+                    {
+                        log.Add($"  suggest main slot \"{candidate.Title}\" " +
+                                $"min={candidate.MinWidth}x{candidate.MinHeight}");
+                        return LayoutResult.MainSlot(kind, candidate);
+                    }
+                }
+
                 var suggestion = kind == LayoutKind.Cascade
                     ? new List<WindowInfo>()
                     : FindMinimalMinimize(movable, kind, gap, limits);
@@ -198,7 +218,7 @@ public sealed class LayoutService
                 }
 
                 var retryNotes = new List<string>();
-                var retry = BuildPlan(kind, groups, gap, limits, retryNotes);
+                var retry = BuildPlan(kind, groups, gap, limits, retryNotes, mainSlot);
                 if (retry != null && retry.Count > 0)
                 {
                     log.Add("  retry after clamping");
@@ -542,6 +562,29 @@ public sealed class LayoutService
         return scoped.AsEnumerable().Reverse().Take(count).ToList();
     }
 
+    /// <summary>
+    /// 网格的格数上限：窗口比格子多时，把 Z 序末尾（最久没用）的那些挪进 victims，
+    /// 由调用方最小化——不静默少排几个把窗口留在原地压着网格。
+    /// </summary>
+    private static void ApplyGridLimit(
+        LayoutKind kind, List<WindowInfo> participants, List<WindowInfo> victims,
+        int limit, List<string> log)
+    {
+        if (kind != LayoutKind.Grid || limit <= 0 || participants.Count <= limit)
+        {
+            return;
+        }
+
+        var extra = participants.Skip(limit).ToList();
+        foreach (var window in extra)
+        {
+            participants.Remove(window);
+        }
+
+        victims.AddRange(extra);
+        log.Add($"  grid limit {limit}: minimize {extra.Count} extra");
+    }
+
     // ---------------- 生成布局 ----------------
 
     /// <returns>放不下时返回 null。</returns>
@@ -550,7 +593,8 @@ public sealed class LayoutService
         List<WindowGroup> groups,
         int gap,
         Dictionary<IntPtr, SizeLimits> limits,
-        List<string> notes)
+        List<string> notes,
+        IntPtr preferredMain = default)
     {
         var plan = new List<PlannedWindow>();
 
@@ -579,7 +623,7 @@ public sealed class LayoutService
                     rects = Rows(ordered, area, gap, limits, floors, out note);
                     break;
                 case LayoutKind.Grid:
-                    rects = Grid(ordered, area, gap, limits, floors);
+                    rects = Grid(ordered, area, gap, limits, preferredMain, out note);
                     break;
                 case LayoutKind.MainLeft:
                     rects = MainLeft(ordered, area, gap, limits, floors);
@@ -790,60 +834,92 @@ public sealed class LayoutService
         return result;
     }
 
+    /// <summary>
+    /// 网格平铺：主窗 + 环绕的马赛克构图，几何和分区模式共用（逐像素一致）。
+    /// 默认按调用方给的顺序（前台优先）当主窗；用户在弹窗里确认"把某个窗口放到主窗"时，
+    /// 通过 <paramref name="preferredMain"/> 把它排到第一个，再按马赛克排。
+    /// 任何一格装不下该窗口声明的最小尺寸就返回 null，交给上层弹窗（放主窗 / 最小化 / 层叠 / 放弃），
+    /// 不擅自换成"均分竖条"那种和网格无关的排法。
+    /// </summary>
     private static List<WindowRect>? Grid(
         List<WindowInfo> windows, WindowRect area, int gap,
-        Dictionary<IntPtr, SizeLimits> limits, Floors floors)
+        Dictionary<IntPtr, SizeLimits> limits, IntPtr preferredMain, out string? note)
     {
+        note = null;
+
         if (windows.Count == 1)
         {
             return new List<WindowRect> { area };
         }
 
-        // 列数从多到少试，第一种能装下所有最小尺寸的胜出
-        var maxColumns = Math.Min(windows.Count, 4);
-        for (var columns = maxColumns; columns >= 1; columns--)
+        if (preferredMain != IntPtr.Zero)
         {
-            var slices = Slice(windows, columns);
-
-            var rowMins = slices.Select(slice => slice.Max(w => limits[w.Handle].Height)).ToList();
-            var rowHeights = LayoutMath.Allocate(area.Height, gap, rowMins, floors.Height);
-            if (rowHeights == null)
+            var pinned = windows.FirstOrDefault(w => w.Handle == preferredMain);
+            if (pinned != null)
             {
-                continue;
-            }
+                var ordered = new List<WindowInfo>(windows.Count) { pinned };
+                ordered.AddRange(windows.Where(w => w.Handle != preferredMain));
 
-            var result = new List<WindowRect>(windows.Count);
-            var y = area.Top;
-            var ok = true;
-
-            for (var row = 0; row < slices.Count; row++)
-            {
-                var slice = slices[row];
-                var sizes = LayoutMath.Allocate(
-                    area.Width, gap, slice.Select(w => limits[w.Handle].Width).ToList(), floors.Width);
-                if (sizes == null)
+                if (!TryMosaic(ordered, area, gap, limits, out var pinnedRects))
                 {
-                    ok = false;
-                    break;
+                    return null;
                 }
 
-                var x = area.Left;
-                for (var i = 0; i < slice.Count; i++)
-                {
-                    result.Add(new WindowRect(x, y, sizes[i], rowHeights[row]));
-                    x += sizes[i] + gap;
-                }
-
-                y += rowHeights[row] + gap;
-            }
-
-            if (ok)
-            {
-                return result;
+                note = $"「{pinned.Title}」已放到主窗";
+                return MapBack(windows, ordered, pinnedRects);
             }
         }
 
-        return null;
+        return TryMosaic(windows, area, gap, limits, out var rects) ? rects : null;
+    }
+
+    /// <summary>按马赛克构排放一次；任何一格装不下该窗口声明的最小尺寸就整体失败。</summary>
+    private static bool TryMosaic(
+        List<WindowInfo> ordered, WindowRect area, int gap,
+        Dictionary<IntPtr, SizeLimits> limits, out List<WindowRect> rects)
+    {
+        var mosaic = ZoneWorkspace.Create(LayoutKind.Grid, ordered, area, gap).Compute();
+        var byHandle = new Dictionary<IntPtr, WindowRect>(mosaic.Count);
+        foreach (var placement in mosaic)
+        {
+            byHandle[placement.Window.Handle] = placement.Rect;
+        }
+
+        rects = new List<WindowRect>(ordered.Count);
+        foreach (var window in ordered)
+        {
+            if (!byHandle.TryGetValue(window.Handle, out var rect) ||
+                rect.Width < Math.Max(limits[window.Handle].Width, MinWidth) ||
+                rect.Height < Math.Max(limits[window.Handle].Height, MinHeight))
+            {
+                rects = new List<WindowRect>();
+                return false;
+            }
+
+            rects.Add(rect);
+        }
+
+        return true;
+    }
+
+    /// <summary>按原来的窗口顺序把矩形映射回去（BuildPlan 用同一个 ordered 列表配对）。</summary>
+    private static List<WindowRect> MapBack(
+        List<WindowInfo> windows, List<WindowInfo> ordered, List<WindowRect> orderedRects)
+    {
+        var byHandle = new Dictionary<IntPtr, WindowRect>(ordered.Count);
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            byHandle[ordered[i].Handle] = orderedRects[i];
+        }
+
+        return windows.Select(w => byHandle[w.Handle]).ToList();
+    }
+
+    /// <summary>窗口"声明的最小尺寸"面积，用来决定谁更该占主窗。</summary>
+    private static long RequiredArea(WindowInfo window, Dictionary<IntPtr, SizeLimits> limits)
+    {
+        var limit = limits[window.Handle];
+        return (long)Math.Max(limit.Width, MinWidth) * Math.Max(limit.Height, MinHeight);
     }
 
     private static List<WindowRect>? MainLeft(
