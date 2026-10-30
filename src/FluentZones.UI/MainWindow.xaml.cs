@@ -4,10 +4,12 @@ using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
 using Windows.Graphics;
@@ -35,11 +37,23 @@ public sealed partial class MainWindow : Window
     private int _nextHotkeyId = 1;
     private bool _initializing = true;
     private bool _syncingToggle;
+    private bool _syncingZoneToggle;
     private bool _hotkeysAvailable;
     private bool _prompting;
     private bool _elevationPrompted;
-    private ZoneOverlay? _zoneOverlay;
+    private ZoneDragHook? _zoneOverlay;
     private ZoneWorkspace? _zoneWorkspace;
+    private WinEventWatcher? _zoneWatcher;
+    private bool _zoneSyncQueued;
+
+    // 分区模式的边框：由 DWM 画在窗口自己身上；窗口之间留 6px 间隙用来拖拽
+    private const int ZoneMargin = 4;
+    private const int ZoneMinGap = 6;
+    private HashSet<IntPtr> _zoneWindowHandles = new();
+    private readonly HashSet<IntPtr> _zoneBordered = new();
+    private readonly Dictionary<IntPtr, int> _zoneStyles = new();
+    private IntPtr _zoneMonitor;
+    private LayoutKind _zoneLayoutKind;
 
     private enum StatusLevel
     {
@@ -65,8 +79,14 @@ public sealed partial class MainWindow : Window
         TryStyleTitleBar();
 
         BuildLayoutCards();
+        HookStartupCardHover();
+        StartupExpander.Expanding += (_, _) => AnimateStartupContent();
         ApplyOptionsToUi();
         BuildHotkeyRows();
+        BuildAboutLinks();
+
+        SetVersionText();
+        Nav.SelectedItem = Nav.MenuItems[0];
 
         RootGrid.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(OnRootKeyDown), true);
 
@@ -96,7 +116,7 @@ public sealed partial class MainWindow : Window
             }
             else
             {
-                UpdateStatus("就绪：Ctrl+Alt+Z 进入分区模式", StatusLevel.Info);
+                UpdateStatus("就绪：Ctrl+Alt+Z 开关分区模式；选布局进入工作区", StatusLevel.Info);
             }
         }
         catch (Exception ex)
@@ -127,7 +147,7 @@ public sealed partial class MainWindow : Window
         {
             var scale = RootGrid.XamlRoot?.RasterizationScale ?? 1.0;
             var work = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
-            var width = Math.Min((int)Math.Round(860 * scale), (int)(work.Width * 0.95));
+            var width = Math.Min((int)Math.Round(1000 * scale), (int)(work.Width * 0.95));
             var height = Math.Min((int)Math.Round(880 * scale), (int)(work.Height * 0.92));
 
             AppWindow.Resize(new SizeInt32(width, height));
@@ -159,6 +179,7 @@ public sealed partial class MainWindow : Window
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
+        StopZoneWatch();
         _zoneOverlay?.Dispose();
         _hotkeys.Dispose();
     }
@@ -179,9 +200,17 @@ public sealed partial class MainWindow : Window
         for (var i = 0; i < kinds.Length; i++)
         {
             var card = CreateLayoutCard(kinds[i]);
-            Grid.SetColumn(card, i % 3);
-            Grid.SetRow(card, i / 3);
-            LayoutCardsHost.Children.Add(card);
+            var gear = CreateGearButton(kinds[i]);
+
+            // 齿轮和卡片是兄弟而不是父子：点齿轮不会触发"单击卡片立即排布"
+            var host = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
+            host.Children.Add(card);
+            host.Children.Add(gear);
+            AttachGearHover(card, gear);
+
+            Grid.SetColumn(host, i % 3);
+            Grid.SetRow(host, i / 3);
+            LayoutCardsHost.Children.Add(host);
             _cards[kinds[i]] = card;
         }
 
@@ -228,6 +257,234 @@ public sealed partial class MainWindow : Window
             $"{LayoutNames.Display(kind)}　{GetComboText(action)}\nShift + 热键 = 作用于所有显示器");
         button.Click += (_, _) => ApplyLayout(kind);
         return button;
+    }
+
+    /// <summary>
+    /// 卡片右上角的齿轮：打开该布局的参数设置。网格和左右并排有参数，其余三张卡片的齿轮置灰。
+    /// </summary>
+    private Button CreateGearButton(LayoutKind kind)
+    {
+        var configurable = kind is LayoutKind.Grid or LayoutKind.Columns;
+
+        var gear = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE713", FontSize = 14 },
+            Width = 30,
+            Height = 30,
+            Padding = new Thickness(0),
+            Background = new SolidColorBrush(Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(4),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 6, 6, 0),
+            IsEnabled = configurable,
+            Opacity = configurable ? 0.5 : 0.25,
+        };
+
+        AutomationProperties.SetName(
+            gear,
+            configurable ? $"{LayoutNames.Display(kind)}设置" : $"{LayoutNames.Display(kind)}暂无可调参数");
+        ToolTipService.SetToolTip(
+            gear,
+            kind == LayoutKind.Grid
+                ? "设置：最多窗口数"
+                : kind == LayoutKind.Columns
+                    ? "设置：每行列数"
+                    : "该布局暂无可调参数");
+
+        if (configurable)
+        {
+            gear.Click += async (_, _) =>
+            {
+                if (kind == LayoutKind.Grid)
+                {
+                    await ShowGridSettingsAsync();
+                }
+                else
+                {
+                    await ShowColumnsSettingsAsync();
+                }
+            };
+        }
+
+        return gear;
+    }
+
+    /// <summary>齿轮平时淡显，鼠标悬停卡片时变明显。</summary>
+    private static void AttachGearHover(Button card, Button gear)
+    {
+        var normal = gear.Opacity;
+
+        void Enter() => gear.Opacity = gear.IsEnabled ? 0.95 : 0.35;
+        void Exit() => gear.Opacity = normal;
+
+        card.PointerEntered += (_, _) => Enter();
+        card.PointerExited += (_, _) => Exit();
+        gear.PointerEntered += (_, _) => Enter();
+        gear.PointerExited += (_, _) => Exit();
+    }
+
+    /// <summary>
+    /// 网格的设置弹窗：最多窗口数（<see cref="AppSettings.GridLimitMin"/>–<see cref="AppSettings.GridLimitMax"/>）。
+    /// 「恢复默认」只把弹窗里的值改回默认，点「保存」才写入设置。
+    /// </summary>
+    private async Task ShowGridSettingsAsync()
+    {
+        if (_prompting)
+        {
+            return;
+        }
+
+        _prompting = true;
+
+        try
+        {
+            // 正在录制热键时把录制收起来，否则弹窗里的按键会被录制流程吃掉
+            CancelCapture(silent: true);
+            BringWindowToFront();
+
+            var limitBox = new NumberBox
+            {
+                Header = "最多窗口数",
+                Value = _settings.GridLimit,
+                Minimum = AppSettings.GridLimitMin,
+                Maximum = AppSettings.GridLimitMax,
+                SmallChange = 1,
+                LargeChange = 1,
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
+                ValidationMode = NumberBoxValidationMode.InvalidInputOverwritten,
+                Width = 160,
+                HorizontalAlignment = HorizontalAlignment.Left,
+            };
+
+            var content = new StackPanel { Spacing = 12, MinWidth = 340 };
+            content.Children.Add(new TextBlock
+            {
+                Text = $"窗口比格子多时，多出来的会被最小化（按 Z 序，最久没用的先下去），" +
+                       $"Ctrl+Alt+0 可一起还原。范围 {AppSettings.GridLimitMin}–{AppSettings.GridLimitMax}。",
+                TextWrapping = TextWrapping.Wrap,
+                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+            });
+            content.Children.Add(limitBox);
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = "网格平铺设置",
+                Content = content,
+                PrimaryButtonText = "保存",
+                SecondaryButtonText = "恢复默认",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            // 恢复默认不关弹窗，只把值改回默认，再点保存才生效
+            dialog.SecondaryButtonClick += (_, args) =>
+            {
+                args.Cancel = true;
+                limitBox.Value = AppSettings.GridLimitDefault;
+            };
+
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            var raw = limitBox.Value;
+            var value = double.IsNaN(raw) ? _settings.GridLimit : (int)Math.Round(raw);
+            _settings.GridLimit = Math.Clamp(value, AppSettings.GridLimitMin, AppSettings.GridLimitMax);
+            SettingsStore.Save(_settings);
+
+            UpdateStatus(
+                $"网格：最多 {_settings.GridLimit} 格（超出的窗口按 Z 序最小化）",
+                StatusLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            UpdateStatus("打开设置失败：" + ex.Message, StatusLevel.Error);
+        }
+        finally
+        {
+            _prompting = false;
+        }
+    }
+
+    /// <summary>左右并排的设置：每行列数（3 / 4），用下拉选，不要数字输入。</summary>
+    private async Task ShowColumnsSettingsAsync()
+    {
+        if (_prompting)
+        {
+            return;
+        }
+
+        _prompting = true;
+
+        try
+        {
+            CancelCapture(silent: true);
+            BringWindowToFront();
+
+            var combo = new ComboBox
+            {
+                Header = "每行列数",
+                MinWidth = 180,
+                HorizontalAlignment = HorizontalAlignment.Left,
+            };
+            combo.Items.Add("3 列");
+            combo.Items.Add("4 列");
+            combo.SelectedIndex = _settings.ColumnsLimit == AppSettings.ColumnsLimitMin ? 0 : 1;
+
+            var content = new StackPanel { Spacing = 12, MinWidth = 340 };
+            content.Children.Add(new TextBlock
+            {
+                Text = $"窗口按每行 3 或 4 个排列，放不下的自动换到下一行。" +
+                       $"范围 {AppSettings.ColumnsLimitMin}–{AppSettings.ColumnsLimitMax} 列。",
+                TextWrapping = TextWrapping.Wrap,
+                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+            });
+            content.Children.Add(combo);
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = "左右并排设置",
+                Content = content,
+                PrimaryButtonText = "保存",
+                SecondaryButtonText = "恢复默认",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            // 恢复默认只改弹窗里的值，点保存才写入
+            dialog.SecondaryButtonClick += (_, args) =>
+            {
+                args.Cancel = true;
+                combo.SelectedIndex = 1;
+            };
+
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            var value = combo.SelectedIndex == 0
+                ? AppSettings.ColumnsLimitMin
+                : AppSettings.ColumnsLimitMax;
+            _settings.ColumnsLimit = value;
+            SettingsStore.Save(_settings);
+            UpdateStatus($"左右并排：每行最多 {value} 列", StatusLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            UpdateStatus("打开设置失败：" + ex.Message, StatusLevel.Error);
+        }
+        finally
+        {
+            _prompting = false;
+        }
     }
 
     private Button CreateRestoreCard()
@@ -285,26 +542,59 @@ public sealed partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Left,
         };
 
-        var brush = (Brush)Application.Current.Resources["AccentFillColorDefaultBrush"];
-        var rects = PreviewRects(kind);
-
-        for (var i = 0; i < rects.Count; i++)
+        foreach (var rect in PreviewRects(kind))
         {
-            var rect = new Rectangle
-            {
-                Width = Math.Max(rects[i].Width - 1.5, 2),
-                Height = Math.Max(rects[i].Height - 1.5, 2),
-                RadiusX = 2,
-                RadiusY = 2,
-                Fill = brush,
-                Opacity = kind == LayoutKind.Cascade ? 0.35 + i * 0.15 : 0.6,
-            };
-            Canvas.SetLeft(rect, rects[i].X + 0.75);
-            Canvas.SetTop(rect, rects[i].Y + 0.75);
-            canvas.Children.Add(rect);
+            var window = CreatePreviewWindow(rect.Width, rect.Height);
+            Canvas.SetLeft(window, rect.X);
+            Canvas.SetTop(window, rect.Y);
+            canvas.Children.Add(window);
         }
 
         return canvas;
+    }
+
+    /// <summary>卡片缩略图里的“小窗口”：浅色底 + 细描边 + 一条标题栏，五个布局共用同一套画法。</summary>
+    private static FrameworkElement CreatePreviewWindow(double width, double height)
+    {
+        var accent = (Brush)Application.Current.Resources["AccentFillColorDefaultBrush"];
+
+        var root = new Grid
+        {
+            Width = Math.Max(width, 4),
+            Height = Math.Max(height, 4),
+        };
+
+        root.Children.Add(new Border
+        {
+            Background = accent,
+            CornerRadius = new CornerRadius(2.5),
+            Opacity = 0.18,
+        });
+
+        root.Children.Add(new Border
+        {
+            BorderBrush = accent,
+            BorderThickness = new Thickness(0.8),
+            CornerRadius = new CornerRadius(2.5),
+            Opacity = 0.5,
+        });
+
+        if (width >= 18 && height >= 12)
+        {
+            root.Children.Add(new Border
+            {
+                Background = accent,
+                CornerRadius = new CornerRadius(1.2),
+                Height = 2.6,
+                Width = Math.Max(width * 0.42, 6),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(2.4, 2.4, 0, 0),
+                Opacity = 0.65,
+            });
+        }
+
+        return root;
     }
 
     private static List<Rect> PreviewRects(LayoutKind kind)
@@ -316,47 +606,37 @@ public sealed partial class MainWindow : Window
         switch (kind)
         {
             case LayoutKind.Cascade:
-                for (var i = 0; i < 4; i++)
+                for (var i = 0; i < 3; i++)
                 {
-                    rects.Add(new Rect(6 + i * 9, 6 + i * 6, 62, 34));
+                    rects.Add(new Rect(4 + i * 9, 4 + i * 6, 60, 38));
                 }
 
                 break;
 
             case LayoutKind.Columns:
-                for (var i = 0; i < 4; i++)
-                {
-                    rects.Add(new Rect(i * width / 4.0, 0, width / 4.0, height));
-                }
-
+                rects.Add(new Rect(0, 0, 30, height));
+                rects.Add(new Rect(33, 0, 30, height));
+                rects.Add(new Rect(66, 0, 30, height));
                 break;
 
             case LayoutKind.Rows:
-                for (var i = 0; i < 4; i++)
-                {
-                    rects.Add(new Rect(0, i * height / 4.0, width, height / 4.0));
-                }
-
+                rects.Add(new Rect(0, 0, width, 16));
+                rects.Add(new Rect(0, 19, width, 16));
+                rects.Add(new Rect(0, 38, width, 16));
                 break;
 
             case LayoutKind.Grid:
-                for (var row = 0; row < 2; row++)
-                {
-                    for (var col = 0; col < 2; col++)
-                    {
-                        rects.Add(new Rect(col * width / 2.0, row * height / 2.0, width / 2.0, height / 2.0));
-                    }
-                }
-
+                rects.Add(new Rect(0, 0, 58, 32));
+                rects.Add(new Rect(61, 0, 35, 32));
+                rects.Add(new Rect(0, 35, 46, 19));
+                rects.Add(new Rect(49, 35, 47, 19));
                 break;
 
             case LayoutKind.MainLeft:
-                rects.Add(new Rect(0, 0, width / 2.0, height));
-                for (var i = 0; i < 3; i++)
-                {
-                    rects.Add(new Rect(width / 2.0, i * height / 3.0, width / 2.0, height / 3.0));
-                }
-
+                rects.Add(new Rect(0, 0, 58, height));
+                rects.Add(new Rect(61, 0, 35, 16));
+                rects.Add(new Rect(61, 19, 35, 16));
+                rects.Add(new Rect(61, 38, 35, 16));
                 break;
         }
 
@@ -393,6 +673,36 @@ public sealed partial class MainWindow : Window
         var startupEnabled = _settings.StartWithWindows || StartupRegistration.IsEnabled();
         _settings.StartWithWindows = startupEnabled;
         StartupToggle.IsOn = startupEnabled;
+
+        // 打包（MSIX）应用不能提权：管理员模式启动在商店版里不可用
+        ElevatedToggle.IsEnabled = !HostInfo.IsPackaged;
+        ElevatedToggle.IsOn = _settings.RunAsAdmin && !HostInfo.IsPackaged;
+        ToolTipService.SetToolTip(
+            ElevatedToggle,
+            HostInfo.IsPackaged
+                ? "MSIX 打包版不能请求管理员权限"
+                : "启动时请求管理员权限（UAC）");
+
+        UpdateToggleText(StartupStateText, StartupToggle);
+        UpdateToggleText(ElevatedStateText, ElevatedToggle);
+    }
+
+    private void Nav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    {
+        var tag = args.SelectedItemContainer?.Tag as string ?? "home";
+        HomePanel.Visibility = tag == "home" ? Visibility.Visible : Visibility.Collapsed;
+        PrefsPanel.Visibility = tag == "prefs" ? Visibility.Visible : Visibility.Collapsed;
+        HotkeysPanel.Visibility = tag == "hotkeys" ? Visibility.Visible : Visibility.Collapsed;
+        AboutPanel.Visibility = tag == "about" ? Visibility.Visible : Visibility.Collapsed;
+        ContentScroller.ChangeView(null, 0, null, true);
+    }
+
+    private void SetVersionText()
+    {
+        var version = typeof(MainWindow).Assembly.GetName().Version;
+        VersionText.Text = version is null
+            ? "版本 0.1.0"
+            : $"版本 {version.Major}.{version.Minor}.{version.Build}";
     }
 
     private void GapSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
@@ -429,6 +739,8 @@ public sealed partial class MainWindow : Window
 
     private void StartupToggle_Toggled(object sender, RoutedEventArgs e)
     {
+        UpdateToggleText(StartupStateText, StartupToggle);
+
         if (_initializing || _syncingToggle)
         {
             return;
@@ -448,6 +760,168 @@ public sealed partial class MainWindow : Window
             _syncingToggle = false;
             UpdateStatus("设置开机启动失败：" + ex.Message, StatusLevel.Error);
         }
+    }
+
+    private void ElevatedToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        UpdateToggleText(ElevatedStateText, ElevatedToggle);
+
+        if (_initializing)
+        {
+            return;
+        }
+
+        _settings.RunAsAdmin = ElevatedToggle.IsOn;
+        SettingsStore.Save(_settings);
+        UpdateStatus(
+            ElevatedToggle.IsOn
+                ? "管理员模式启动：下次启动会请求管理员权限（UAC）"
+                : "已关闭管理员模式启动",
+            StatusLevel.Info);
+    }
+
+    /// <summary>
+    /// 悬停时整张“启动”卡片变灰（和 Windows 设置里的可展开卡片一致）。
+    /// Expander 标题本身是个按钮，会把指针事件吃掉，所以在根节点用 PointerMoved 判断位置。
+    /// </summary>
+    private void HookStartupCardHover()
+    {
+        RootGrid.AddHandler(
+            UIElement.PointerMovedEvent,
+            new PointerEventHandler((_, e) => UpdateStartupCardHover(e.GetCurrentPoint(RootGrid).Position)),
+            true);
+        RootGrid.AddHandler(
+            UIElement.PointerExitedEvent,
+            new PointerEventHandler((_, _) => SetStartupCardHover(false)),
+            true);
+    }
+
+    private void UpdateStartupCardHover(Point position)
+    {
+        if (StartupCard.ActualWidth <= 0 || StartupCard.ActualHeight <= 0)
+        {
+            return;
+        }
+
+        var transform = StartupCard.TransformToVisual(RootGrid);
+        var bounds = transform.TransformBounds(
+            new Rect(0, 0, StartupCard.ActualWidth, StartupCard.ActualHeight));
+        SetStartupCardHover(bounds.Contains(position));
+    }
+
+    private void SetStartupCardHover(bool hover)
+    {
+        var key = hover
+            ? "CardBackgroundFillColorSecondaryBrush"
+            : "CardBackgroundFillColorDefaultBrush";
+        if (Application.Current.Resources[key] is Brush brush)
+        {
+            StartupCard.Background = brush;
+        }
+    }
+
+    /// <summary>开关右侧的状态文字（Windows 设置里是「关/开 + 开关」的顺序）。</summary>
+    private void BuildAboutLinks()
+    {
+        AddAboutLink("\uE8A7", "GitHub 仓库", "https://github.com/xuzhunzhi/fluent-zones");
+        AddAboutLink("\uE736", "README（功能与已知限制）", "https://github.com/xuzhunzhi/fluent-zones/blob/main/README.md");
+        AddAboutLink("\uE73E", "MIT License", "https://github.com/xuzhunzhi/fluent-zones/blob/main/LICENSE");
+    }
+
+    private void AddAboutLink(string glyph, string text, string url)
+    {
+        var row = new Grid
+        {
+            ColumnSpacing = 12,
+            Padding = new Thickness(16, 12, 12, 12),
+        };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var icon = new FontIcon { Glyph = glyph, FontSize = 16 };
+        icon.Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
+        row.Children.Add(icon);
+
+        var label = new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(label, 1);
+        row.Children.Add(label);
+
+        var chevron = new FontIcon { Glyph = "\uE76C", FontSize = 12 };
+        chevron.Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"];
+        Grid.SetColumn(chevron, 2);
+        row.Children.Add(chevron);
+
+        var hover = (Brush)Application.Current.Resources["CardBackgroundFillColorSecondaryBrush"];
+        var transparent = new SolidColorBrush(Colors.Transparent);
+
+        var button = new Button
+        {
+            Content = row,
+            Background = transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            CornerRadius = new CornerRadius(6),
+        };
+
+        button.Click += async (_, _) =>
+        {
+            try
+            {
+                await Windows.System.Launcher.LaunchUriAsync(new Uri(url));
+            }
+            catch
+            {
+                // 打不开浏览器就忽略
+            }
+        };
+
+        button.PointerEntered += (_, _) => button.Background = hover;
+        button.PointerExited += (_, _) => button.Background = transparent;
+
+        AboutLinksHost.Children.Add(button);
+    }
+
+    private static void UpdateToggleText(TextBlock label, ToggleSwitch toggle)
+    {        label.Text = toggle.IsOn ? "开" : "关";
+    }
+
+    /// <summary>展开「启动」卡片时，内容淡入并从上方滑入；卡片之间的位移由 RepositionThemeTransition 补。</summary>
+    private void AnimateStartupContent()
+    {
+        if (StartupContent.RenderTransform is not TranslateTransform slide)
+        {
+            return;
+        }
+
+        StartupContent.Opacity = 0;
+        slide.Y = 12;
+
+        var storyboard = new Storyboard();
+        var fade = new DoubleAnimation
+        {
+            To = 1,
+            Duration = new Duration(TimeSpan.FromMilliseconds(180)),
+            EnableDependentAnimation = true,
+        };
+        Storyboard.SetTarget(fade, StartupContent);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+
+        var move = new DoubleAnimation
+        {
+            To = 0,
+            Duration = new Duration(TimeSpan.FromMilliseconds(180)),
+            EnableDependentAnimation = true,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        Storyboard.SetTarget(move, slide);
+        Storyboard.SetTargetProperty(move, "Y");
+
+        storyboard.Children.Add(fade);
+        storyboard.Children.Add(move);
+        storyboard.Begin();
     }
 
     // ---------------- 热键表 ----------------
@@ -794,6 +1268,13 @@ public sealed partial class MainWindow : Window
 
     private async Task ApplyLayoutAsync(LayoutKind kind, LayoutScope scope, IntPtr forcedMain = default)
     {
+        // 分区能力开启时：选布局 = 按该布局进入工作区（层叠没有可拖的分隔线，仍按一次性排）
+        if (kind != LayoutKind.Cascade && (ZoneToggle.IsOn || _zoneWorkspace != null))
+        {
+            EnterZones(scope, kind);
+            return;
+        }
+
         if (_zoneWorkspace != null)
         {
             ExitZones();
@@ -802,7 +1283,7 @@ public sealed partial class MainWindow : Window
         try
         {
             var options = new LayoutOptions(
-                (int)Math.Round(GapSlider.Value), scope, _settings.GridLimit);
+                (int)Math.Round(GapSlider.Value), scope, _settings.GridLimit, _settings.ColumnsLimit);
             var result = _layouts.Apply(kind, options, mainSlot: forcedMain);
 
             // 网格装不下，但把声明需求最大的窗口换到主窗就能排：先弹窗问，用户点头才重排，
@@ -848,6 +1329,11 @@ public sealed partial class MainWindow : Window
             if (result.Success)
             {
                 HighlightCard(result.Kind ?? kind);
+
+                if (ZoneToggle.IsOn && kind == LayoutKind.Cascade)
+                {
+                    UpdateStatus(result.Message + "（层叠没有可拖的分隔线，按一次性排列）", StatusLevel.Success);
+                }
 
                 // 有些应用会在收到尺寸变化后自己微调窗口，过一会儿再扶正一次
                 await Task.Delay(600);
@@ -1066,46 +1552,125 @@ public sealed partial class MainWindow : Window
 
     // ---------------- 分区模式 ----------------
 
-    private void ZoneButton_Click(object sender, RoutedEventArgs e) => ToggleZones();
+    private void ZoneToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        UpdateToggleText(ZoneStateText, ZoneToggle);
 
+        if (_syncingZoneToggle)
+        {
+            return;
+        }
+
+        // 开关只表示「开启分区能力」：打开时不动窗口，等你选一个布局再进工作区
+        if (ZoneToggle.IsOn)
+        {
+            if (_zoneWorkspace == null)
+            {
+                UpdateStatus("分区模式已开启：选一个布局（卡片或 Ctrl+Alt+1..5）进入工作区", StatusLevel.Info);
+            }
+
+            return;
+        }
+
+        if (_zoneWorkspace != null)
+        {
+            ExitZones();
+            UpdateStatus("分区模式已关闭，窗口保持当前布局；Ctrl+Alt+0 可还原", StatusLevel.Info);
+        }
+        else
+        {
+            UpdateStatus("分区模式已关闭", StatusLevel.Info);
+        }
+    }
+
+    /// <summary>热键 Ctrl+Alt+Z：进入 / 退出工作区（开关同步）。</summary>
+    /// <summary>
+    /// 热键 Ctrl+Alt+Z：只开关「分区模式」能力，不直接铺窗口；
+    /// 进入工作区仍然靠选布局（卡片或 Ctrl+Alt+1..5）。
+    /// </summary>
     private void ToggleZones()
     {
-        try
+        if (ZoneToggle.IsOn)
         {
+            SetZoneToggle(false);
             if (_zoneWorkspace != null)
             {
                 ExitZones();
-                return;
+                UpdateStatus("分区模式已关闭，窗口保持当前布局；Ctrl+Alt+0 可还原", StatusLevel.Info);
             }
-
-            var all = _layouts.GetWindows(CurrentOptions().Scope);
-            if (all.Count < 2)
+            else
             {
-                UpdateStatus("至少需要两个窗口才能进入分区模式", StatusLevel.Warn);
+                UpdateStatus("分区模式已关闭", StatusLevel.Info);
+            }
+
+            return;
+        }
+
+        SetZoneToggle(true);
+        UpdateStatus("分区模式已开启：选一个布局（卡片或 Ctrl+Alt+1..5）进入工作区", StatusLevel.Info);
+    }
+
+    /// <summary>
+    /// 进入工作区；已经在工作区里就按新布局重建。
+    /// <paramref name="kind"/> 为空时按窗口数量自动选（≤3 左右并排，否则网格）。
+    /// </summary>
+    private void EnterZones(LayoutScope scope, LayoutKind? kind = null)
+    {
+        try
+        {
+            var all = _layouts.GetWindows(scope);
+
+            // 提权窗口（UIPI）动不了：不要把它算进槽位，否则会留下一个空格子，
+            // 它的对话框还会压在别的分区上（布局模式在 LayoutService 里也是这么排除的）。
+            var unmovable = all.Where(w => w.CannotMove).ToList();
+            var movable = all.Where(w => !w.CannotMove).ToList();
+            if (movable.Count < 2)
+            {
+                UpdateStatus(
+                    unmovable.Count > 0
+                        ? "可移动的窗口不足两个：提权窗口需要以管理员身份运行"
+                        : "至少需要两个窗口才能进入分区模式",
+                    StatusLevel.Warn);
                 return;
             }
 
-            var monitor = all[0].Monitor;
-            var windows = all.Where(w => w.Monitor == monitor).ToList();
+            var monitor = movable[0].Monitor;
+            var windows = movable.Where(w => w.Monitor == monitor).ToList();
             if (windows.Count < 2)
             {
-                windows = all.ToList();
+                windows = movable.ToList();
                 monitor = windows[0].Monitor;
             }
 
-            var area = _layouts.GetMonitorArea(monitor);
-            var kind = windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid;
-            var workspace = ZoneWorkspace.Create(kind, windows, area, CurrentOptions().Gap);
+            var area = ZoneArea(monitor);
+            var effective = kind ?? (windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid);
+            var workspace = ZoneWorkspace.Create(
+                effective, windows, area, Math.Max(CurrentOptions().Gap, ZoneMinGap));
 
-            _layouts.CaptureSnapshot(windows);
+            // 只记第一次进入前的窗口位置：Ctrl+Alt+0 永远回到非工作区状态
+            if (_zoneWorkspace == null)
+            {
+                _layouts.CaptureSnapshot(windows);
+            }
+
             _zoneWorkspace = workspace;
 
             EnsureOverlay().Show(workspace);
             ApplyZone(workspace);
 
-            ZoneButton.Content = "退出分区模式";
+            _zoneLayoutKind = effective;
+            _zoneMonitor = monitor;
+            _zoneWindowHandles = new HashSet<IntPtr>(windows.Select(w => w.Handle));
+            StartZoneWatch();
+
+            SetZoneToggle(true);
+            HighlightCard(effective);
+            var blockedNote = unmovable.Count > 0
+                ? $"；无法移动：{string.Join("、", unmovable.Select(w => w.Title))}（管理员权限）"
+                : string.Empty;
             UpdateStatus(
-                $"分区模式：拖动分隔线同时调整两侧窗口（{windows.Count} 个），Ctrl+Alt+Z 退出",
+                $"分区模式（{LayoutNames.Display(effective)}）：拖动分隔线同时调整两侧窗口" +
+                $"（{windows.Count} 个），Ctrl+Alt+0 还原并退出{blockedNote}",
                 StatusLevel.Info);
         }
         catch (Exception ex)
@@ -1115,14 +1680,23 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private ZoneOverlay EnsureOverlay()
+    /// <summary>程序改开关状态时不要再触发一次进入/退出。</summary>
+    private void SetZoneToggle(bool on)
+    {
+        _syncingZoneToggle = true;
+        ZoneToggle.IsOn = on;
+        _syncingZoneToggle = false;
+        UpdateToggleText(ZoneStateText, ZoneToggle);
+    }
+
+    private ZoneDragHook EnsureOverlay()
     {
         if (_zoneOverlay != null)
         {
             return _zoneOverlay;
         }
 
-        _zoneOverlay = new ZoneOverlay();
+        _zoneOverlay = new ZoneDragHook();
         _zoneOverlay.Start();
         _zoneOverlay.Changed += workspace =>
         {
@@ -1146,15 +1720,255 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        _layouts.PlaceRects(workspace.Compute().Select(p => (p.Window.Handle, p.Rect)));
+        var placements = workspace.Compute();
+
+        // 先把窗口自己的缩放边框去掉，再按分区摆放：边距只由我们的分隔线调整
+        SyncZoneBorders(placements);
+        _layouts.PlaceRects(placements.Select(p => (p.Window.Handle, p.Rect)));
+    }
+
+    /// <summary>
+    /// 工作区窗口：套上 DWM 强调色边框，并临时去掉 WS_THICKFRAME——
+    /// 这样拖窗口自己的边不会缩放，只能拖窗口之间的分隔线。
+    /// </summary>
+    private void SyncZoneBorders(IReadOnlyList<ZonePlacement> placements)
+    {
+        var handles = placements.Select(p => p.Window.Handle).ToHashSet();
+
+        foreach (var stale in _zoneBordered.Where(h => !handles.Contains(h)).ToList())
+        {
+            WindowOps.ResetBorderColor(stale);
+            RestoreZoneStyle(stale);
+            _zoneBordered.Remove(stale);
+        }
+
+        foreach (var handle in handles.Where(h => !_zoneBordered.Contains(h)))
+        {
+            WindowOps.SetBorderColor(handle, WindowOps.ZoneBorderColor);
+            _zoneStyles[handle] = WindowOps.RemoveResizeBorder(handle);
+            _zoneBordered.Add(handle);
+        }
+    }
+
+    private void RestoreZoneStyle(IntPtr handle)
+    {
+        if (!_zoneStyles.TryGetValue(handle, out var style))
+        {
+            return;
+        }
+
+        _zoneStyles.Remove(handle);
+        WindowOps.RestoreStyle(handle, style);
     }
 
     private void ExitZones()
     {
+        StopZoneWatch();
+
+        foreach (var handle in _zoneBordered)
+        {
+            WindowOps.ResetBorderColor(handle);
+            RestoreZoneStyle(handle);
+        }
+
+        _zoneBordered.Clear();
+        _zoneStyles.Clear();
         _zoneOverlay?.Hide();
         _zoneWorkspace = null;
-        ZoneButton.Content = "进入分区模式";
         UpdateStatus("已退出分区模式，Ctrl+Alt+0 可还原到进入前的位置", StatusLevel.Info);
+    }
+
+    /// <summary>
+    /// 工作区开启期间监听顶层窗口事件（SetWinEventHook）：新窗口 SHOW 时自动入槽，
+    /// 窗口销毁/隐藏时重新铺开。事件会连发几次，用 _zoneSyncQueued 合并成一次重排。
+    /// </summary>
+    private void StartZoneWatch()
+    {
+        if (_zoneWatcher != null)
+        {
+            return;
+        }
+
+        _zoneWatcher = new WinEventWatcher();
+        _zoneWatcher.WindowEvent += OnZoneWindowEvent;
+    }
+
+    private void StopZoneWatch()
+    {
+        if (_zoneWatcher == null)
+        {
+            return;
+        }
+
+        _zoneWatcher.WindowEvent -= OnZoneWindowEvent;
+        _zoneWatcher.Dispose();
+        _zoneWatcher = null;
+        _zoneSyncQueued = false;
+    }
+
+    private void OnZoneWindowEvent(IntPtr hwnd, uint eventType)
+    {
+        if (_zoneWorkspace == null || _zoneSyncQueued)
+        {
+            return;
+        }
+
+        _zoneSyncQueued = true;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            _zoneSyncQueued = false;
+            SyncZoneWindows();
+        });
+    }
+
+    private void SyncZoneWindows()
+    {
+        _ = SyncZoneWindowsAsync();
+    }
+
+    private async Task SyncZoneWindowsAsync()
+    {
+        if (_zoneWorkspace == null || _prompting)
+        {
+            return;
+        }
+
+        try
+        {
+            var windows = _layouts.GetWindows(CurrentOptions().Scope)
+                .Where(w => !w.CannotMove && w.Monitor == _zoneMonitor)
+                .ToList();
+
+            if (windows.Count == 0)
+            {
+                return;
+            }
+
+            var handles = new HashSet<IntPtr>(windows.Select(w => w.Handle));
+            if (handles.SetEquals(_zoneWindowHandles))
+            {
+                return;
+            }
+
+            var oldHandles = _zoneWindowHandles;
+            var newcomers = windows.Where(w => !oldHandles.Contains(w.Handle)).ToList();
+            _zoneWindowHandles = handles;
+
+            var gap = Math.Max(CurrentOptions().Gap, ZoneMinGap);
+            var area = ZoneArea(_zoneMonitor);
+            var candidates = new List<WindowInfo>(windows);
+
+            while (true)
+            {
+                var workspace = ZoneWorkspace.Create(_zoneLayoutKind, candidates, area, gap);
+                if (ZoneFits(workspace))
+                {
+                    _zoneWorkspace = workspace;
+                    _zoneOverlay?.Refresh(workspace);
+                    ApplyZone(workspace);
+
+                    var change = newcomers.Count > 0
+                        ? $"新窗口已加入（{candidates.Count} 个）"
+                        : $"窗口已离开（{candidates.Count} 个）";
+                    UpdateStatus($"分区模式（{LayoutNames.Display(_zoneLayoutKind)}）：{change}", StatusLevel.Info);
+                    return;
+                }
+
+                // 放不下：从 Z 序最底层开始找"最小化几个才能排下"（新窗口永远保留）
+                var removable = candidates.AsEnumerable().Reverse()
+                    .Where(w => !newcomers.Any(n => n.Handle == w.Handle))
+                    .ToList();
+
+                List<WindowInfo>? victims = null;
+                for (var k = 1; k <= removable.Count; k++)
+                {
+                    var drop = removable.Take(k).ToList();
+                    var subset = candidates.Where(w => !drop.Contains(w)).ToList();
+                    var attempt = ZoneWorkspace.Create(_zoneLayoutKind, subset, area, gap);
+                    if (ZoneFits(attempt))
+                    {
+                        victims = drop;
+                        break;
+                    }
+                }
+
+                if (victims == null)
+                {
+                    UpdateStatus(
+                        "分区模式：新窗口最小尺寸比工作区还大，无法加入",
+                        StatusLevel.Warn);
+                    return;
+                }
+
+                if (!await AskZoneOverflowAsync(victims.Count, newcomers))
+                {
+                    UpdateStatus("分区模式：新窗口未加入（工作区放不下）", StatusLevel.Warn);
+                    return;
+                }
+
+                foreach (var victim in victims)
+                {
+                    WindowOps.Minimize(victim.Handle);
+                }
+
+                candidates = candidates.Where(w => !victims.Contains(w)).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            UpdateStatus("更新工作区失败：" + ex.Message, StatusLevel.Error);
+        }
+    }
+
+    /// <summary>每个窗口分到的格子都不小于它声明的最小尺寸。</summary>
+    private static bool ZoneFits(ZoneWorkspace workspace) =>
+        workspace.Compute().All(p =>
+            p.Rect.Width >= p.Window.MinWidth && p.Rect.Height >= p.Window.MinHeight);
+
+    /// <summary>工作区里窗口的可用区域：四边留出画边框的边距。</summary>
+    private WindowRect ZoneArea(IntPtr monitor)
+    {
+        var area = _layouts.GetMonitorArea(monitor);
+        return new WindowRect(
+            area.Left + ZoneMargin,
+            area.Top + ZoneMargin,
+            Math.Max(area.Width - ZoneMargin * 2, 80),
+            Math.Max(area.Height - ZoneMargin * 2, 80));
+    }
+
+    private async Task<bool> AskZoneOverflowAsync(int victims, IReadOnlyList<WindowInfo> newcomers)
+    {
+        if (_prompting)
+        {
+            return false;
+        }
+
+        _prompting = true;
+
+        try
+        {
+            CancelCapture(silent: true);
+            BringWindowToFront();
+
+            var newcomer = newcomers.FirstOrDefault()?.Title ?? "新窗口";
+            var dialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = "工作区放不下新窗口",
+                Content =
+                    $"「{newcomer}」加入后，有窗口的最小尺寸超过了分到的格子。\n\n" +
+                    $"可以最小化最久未使用的 {victims} 个窗口腾出空间，或者让它先留在工作区外。",
+                PrimaryButtonText = $"最小化 {victims} 个并加入",
+                CloseButtonText = "先不加入",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            return await dialog.ShowAsync() == ContentDialogResult.Primary;
+        }
+        finally
+        {
+            _prompting = false;
+        }
     }
 
     private LayoutOptions CurrentOptions() => new(

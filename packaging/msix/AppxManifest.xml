@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+    xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+    xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+    xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+    IgnorableNamespaces="uap rescap">
+
+  <!--
+    上架 Microsoft Store 前，把下面三个值换成 Partner Center →「产品管理 → 产品标识」里的：
+      Name                    = 包名称（Package/Identity/Name）
+      Publisher               = 发布者（Package/Identity/Publisher，形如 CN=xxxx）
+      PublisherDisplayName    = 发布者显示名称
+    从 GitHub 侧载时不需要和商店一致，但安装时 .msix 必须已签名（见 docs/RELEASING.md）。
+    Version 由 packaging/build-release.ps1 按 csproj 的 Version 自动替换。
+  -->
+  <Identity
+      Name="XuZhunzhi.FluentZones"
+      Publisher="CN=XuZhunzhi"
+      Version="0.1.0.0"
+      ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Fluent Zones</DisplayName>
+    <PublisherDisplayName>XuZhunzhi</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="FluentZones.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+          DisplayName="Fluent Zones"
+          Description="Fluent 风格的 Windows 窗口布局 / 分区工具"
+          BackgroundColor="transparent"
+          Square150x150Logo="Assets\Square150x150Logo.png"
+          Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

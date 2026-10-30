@@ -28,6 +28,8 @@
 
   <ItemGroup>
     <Content Include="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\icon-preview.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\titlebar.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

@@ -17,7 +17,10 @@ public sealed class ZoneWorkspace
 
     public WindowRect Area { get; }
 
-    public int Gap { get; }
+    public int Gap { get; private set; }
+
+    /// <summary>拖拽时临时改窗口间隙（0 = 两扇窗贴边，边框合成一条）。</summary>
+    public void SetGap(int gap) => Gap = Math.Max(0, gap);
 
     /// <summary>按指定布局把窗口组织成树。</summary>
     public static ZoneWorkspace Create(LayoutKind kind, IReadOnlyList<WindowInfo> windows, WindowRect area, int gap)
@@ -96,7 +99,13 @@ public sealed class ZoneWorkspace
             Chain(windows.Skip(1).Take(rightCount).ToList(), horizontal: false),
             MainRatio);
 
-        var bottom = Chain(windows.Skip(1 + rightCount).ToList(), horizontal: true);
+        // 底部行有两个窗口时，分割线也和上面主窗的竖线对齐（同一列），否则两条竖线会错开
+        var bottomWindows = windows.Skip(1 + rightCount).ToList();
+        var bottom = bottomWindows.Count == 2
+            ? ZoneNode.Split(
+                true, ZoneNode.Leaf(bottomWindows[0]), ZoneNode.Leaf(bottomWindows[1]), MainRatio)
+            : Chain(bottomWindows, horizontal: true);
+
         return ZoneNode.Split(false, top, bottom, MainRatio);
     }
 

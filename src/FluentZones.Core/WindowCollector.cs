@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 
 namespace FluentZones.Core;
@@ -5,6 +6,18 @@ namespace FluentZones.Core;
 /// <summary>挑出"值得参与布局"的顶层窗口：可见、有标题、非工具窗、不在其它虚拟桌面。</summary>
 public static class WindowCollector
 {
+    /// <summary>截图 / 贴图工具不参与窗口分配。</summary>
+    private static readonly HashSet<string> ExcludedProcesses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Snipaste",
+        "SnippingTool",
+        "ScreenSketch",
+        "ShareX",
+        "Greenshot",
+    };
+
+    private static readonly Dictionary<uint, string> ProcessNames = new();
+
     private static readonly HashSet<string> IgnoredClasses = new(StringComparer.OrdinalIgnoreCase)
     {
         "Progman",
@@ -63,7 +76,7 @@ public static class WindowCollector
         }
 
         NativeMethods.GetWindowThreadProcessId(hWnd, out var pid);
-        if (pid == ownPid)
+        if (pid == ownPid || IsExcludedProcess(pid))
         {
             return null;
         }
@@ -130,6 +143,29 @@ public static class WindowCollector
         var cloaked = 0;
         return NativeMethods.DwmGetWindowAttribute(
             hWnd, NativeMethods.DWMWA_CLOAKED, ref cloaked, sizeof(int)) == 0 && cloaked != 0;
+    }
+
+    private static bool IsExcludedProcess(uint pid)
+    {
+        string name;
+        lock (ProcessNames)
+        {
+            if (!ProcessNames.TryGetValue(pid, out name!))
+            {
+                try
+                {
+                    name = Process.GetProcessById((int)pid).ProcessName;
+                }
+                catch
+                {
+                    name = string.Empty;
+                }
+
+                ProcessNames[pid] = name;
+            }
+        }
+
+        return name.Length > 0 && ExcludedProcesses.Contains(name);
     }
 
     /// <summary>诊断用：列出所有顶层窗口以及"参与 / 不参与"的原因。</summary>

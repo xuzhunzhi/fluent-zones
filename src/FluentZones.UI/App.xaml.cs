@@ -1,3 +1,4 @@
+using System.Security.Principal;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using FluentZones.Core;
@@ -19,6 +20,17 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        // 「管理员模式启动」：先以 runas 拉起自己，本进程退出；
+        // UAC 被拒绝时继续按普通权限启动，不影响使用。MSIX 打包版不能提权，直接跳过。
+        if (SettingsStore.Load().RunAsAdmin && !HostInfo.IsPackaged && !IsElevated())
+        {
+            if (TryRelaunchAsAdmin())
+            {
+                Exit();
+                return;
+            }
+        }
+
         try
         {
             var window = new MainWindow();
@@ -52,6 +64,37 @@ public partial class App : Application
         {
             Log("Launch", ex);
             throw;
+        }
+    }
+
+    private static bool IsElevated() =>
+        new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
+
+    /// <summary>用 runas 重新启动自己；UAC 被取消或系统不允许时返回 false。</summary>
+    private static bool TryRelaunchAsAdmin()
+    {
+        try
+        {
+            var exe = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exe))
+            {
+                return false;
+            }
+
+            var arguments = string.Join(' ', Environment.GetCommandLineArgs().Skip(1));
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = arguments,
+                UseShellExecute = true,
+                Verb = "runas",
+            };
+
+            return System.Diagnostics.Process.Start(startInfo) != null;
+        }
+        catch
+        {
+            return false;
         }
     }
 

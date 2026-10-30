@@ -47,7 +47,11 @@ public sealed class WindowInfo
     public bool CannotMove { get; init; }
 }
 
-public sealed record LayoutOptions(int Gap, LayoutScope Scope, int GridLimit = AppSettings.GridLimitDefault)
+public sealed record LayoutOptions(
+    int Gap,
+    LayoutScope Scope,
+    int GridLimit = AppSettings.GridLimitDefault,
+    int ColumnsLimit = AppSettings.ColumnsLimitDefault)
 {
     public static LayoutOptions Default { get; } = new(0, LayoutScope.CursorMonitor);
 }

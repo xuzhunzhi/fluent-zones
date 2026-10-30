@@ -36,12 +36,18 @@ internal static class NativeMethods
 
     internal const int IDC_SIZEWE = 32644;
     internal const int IDC_SIZENS = 32645;
+    internal const int IDC_ARROW = 32512;
 
     internal const int DWMWA_CLOAKED = 14;
     internal const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
 
     /// <summary>DWMWA_WINDOW_CORNER_PREFERENCE（Win11）</summary>
     internal const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+
+    /// <summary>DWMWA_BORDER_COLOR（Win11）：给窗口画一圈边框</summary>
+    internal const int DWMWA_BORDER_COLOR = 34;
+    internal const int DWMWA_COLOR_DEFAULT = unchecked((int)0xFFFFFFFF);
+    internal const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
     internal const int DWMWCP_DONOTROUND = 1;
     internal const int DWMWCP_ROUND = 2;
 
@@ -101,6 +107,45 @@ internal static class NativeMethods
     {
         public int X;
         public int Y;
+    }
+
+    [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    internal struct SIZE
+    {
+        public int cx;
+        public int cy;
+    }
+
+    [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    internal struct BLENDFUNCTION
+    {
+        public byte BlendOp;
+        public byte BlendFlags;
+        public byte SourceConstantAlpha;
+        public byte AlphaFormat;
+    }
+
+    [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    internal struct BITMAPINFOHEADER
+    {
+        public uint biSize;
+        public int biWidth;
+        public int biHeight;
+        public ushort biPlanes;
+        public ushort biBitCount;
+        public uint biCompression;
+        public uint biSizeImage;
+        public int biXPelsPerMeter;
+        public int biYPelsPerMeter;
+        public uint biClrUsed;
+        public uint biClrImportant;
+    }
+
+    [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    internal struct BITMAPINFO
+    {
+        public BITMAPINFOHEADER bmiHeader;
+        public uint bmiColors;
     }
 
     [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
@@ -193,6 +238,46 @@ internal static class NativeMethods
     internal static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
     [DllImport("user32.dll")]
+    internal static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    internal const int GWL_STYLE = -16;
+    internal const int WS_THICKFRAME = 0x00040000;
+    internal const uint SWP_FRAMECHANGED = 0x0020;
+
+    internal const int VK_CONTROL = 0x11;
+
+    [DllImport("user32.dll")]
+    internal static extern short GetAsyncKeyState(int vKey);
+
+    // ---- 低层鼠标钩子（拖分区边距，不在屏幕上画任何东西）----
+
+    internal const int WH_MOUSE_LL = 14;
+
+    [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    internal struct MSLLHOOKSTRUCT
+    {
+        public POINT pt;
+        public uint mouseData;
+        public uint flags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    internal delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll")]
+    internal static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool PostThreadMessage(uint idThread, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
     internal static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
     [DllImport("user32.dll")]
@@ -269,6 +354,37 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
 
+    internal const uint ULW_ALPHA = 2;
+    internal const byte AC_SRC_OVER = 0;
+    internal const byte AC_SRC_ALPHA = 1;
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateDIBSection(
+        IntPtr hdc, ref BITMAPINFO pbmi, uint usage, out IntPtr ppvBits, IntPtr hSection, uint offset);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr SelectObject(IntPtr hdc, IntPtr obj);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetDC(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    internal static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool UpdateLayeredWindow(
+        IntPtr hwnd, IntPtr hdcDst, ref POINT pptDst, ref SIZE psize,
+        IntPtr hdcSrc, ref POINT pptSrc, uint crKey, ref BLENDFUNCTION pblend, uint dwFlags);
+
+    [DllImport("ntdll.dll")]
+    internal static extern void RtlZeroMemory(IntPtr destination, UIntPtr length);
+
     [DllImport("user32.dll")]
     internal static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
 
@@ -320,6 +436,27 @@ internal static class NativeMethods
     /// <summary>投递 WM_QUIT，让 GetMessage 返回 0；必须在消息循环所属线程上调用。</summary>
     [DllImport("user32.dll")]
     internal static extern void PostQuitMessage(int nExitCode);
+
+    // ---- 窗口事件（SetWinEventHook）----
+
+    internal const uint EVENT_OBJECT_CREATE = 0x8000;
+    internal const uint EVENT_OBJECT_DESTROY = 0x8001;
+    internal const uint EVENT_OBJECT_SHOW = 0x8002;
+    internal const uint EVENT_OBJECT_HIDE = 0x8003;
+    internal const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    internal const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+
+    internal delegate void WinEventProc(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint idEventThread, uint msEventTime);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SetWinEventHook(
+        uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
+        WinEventProc lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    internal static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
     // ---- 创建隐藏消息窗口，供全局热键使用 ----
 

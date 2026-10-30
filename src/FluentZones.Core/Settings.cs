@@ -20,11 +20,19 @@ public sealed class AppSettings
     public const int GridLimitMin = 2;
     public const int GridLimitMax = 6;
 
+    /// <summary>左右并排每行最多几个窗口（"每行列数"）：默认、下限、上限。</summary>
+    public const int ColumnsLimitDefault = 4;
+    public const int ColumnsLimitMin = 3;
+    public const int ColumnsLimitMax = 4;
+
     public int Gap { get; set; }
 
     public LayoutScope Scope { get; set; } = LayoutScope.CursorMonitor;
 
     public bool StartWithWindows { get; set; }
+
+    /// <summary>启动时请求管理员权限（UAC），用于操作提权窗口。打包（MSIX）应用不支持。</summary>
+    public bool RunAsAdmin { get; set; }
 
     /// <summary>各布局的"最多窗口数"，键是 <see cref="LayoutKind"/> 的名字；缺失或 0 表示不限制。</summary>
     public Dictionary<string, int> LayoutLimits { get; set; } = new();
@@ -45,12 +53,24 @@ public sealed class AppSettings
         set => SetLimit(LayoutKind.Grid, Math.Clamp(value, GridLimitMin, GridLimitMax));
     }
 
+    /// <summary>左右并排的每行列数，范围见 <see cref="ColumnsLimitMin"/> / <see cref="ColumnsLimitMax"/>。</summary>
+    [JsonIgnore]
+    public int ColumnsLimit
+    {
+        get => GetLimit(LayoutKind.Columns, ColumnsLimitDefault);
+        set => SetLimit(LayoutKind.Columns, Math.Clamp(value, ColumnsLimitMin, ColumnsLimitMax));
+    }
+
     public static AppSettings CreateDefault() => new()
     {
         Gap = 0,
         Scope = LayoutScope.CursorMonitor,
         StartWithWindows = false,
-        LayoutLimits = new Dictionary<string, int> { [nameof(LayoutKind.Grid)] = GridLimitDefault },
+        LayoutLimits = new Dictionary<string, int>
+        {
+            [nameof(LayoutKind.Grid)] = GridLimitDefault,
+            [nameof(LayoutKind.Columns)] = ColumnsLimitDefault,
+        },
         Hotkeys = new List<HotkeySetting>
         {
             new() { Action = "Cascade", Combo = "Ctrl+Alt+1" },

@@ -20,20 +20,58 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
-                <FontIcon Glyph="&#xE8A9;" FontSize="15"
-                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                <Image Source="Assets/titlebar.png" Width="16" Height="16"
+                       VerticalAlignment="Center" />
                 <TextBlock Text="Fluent Zones" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="14" />
                 <TextBlock Text="窗口布局" Style="{StaticResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" />
             </StackPanel>
         </Grid>
 
-        <ScrollViewer x:Name="ContentScroller" Grid.Row="1" IsTabStop="True"
-                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-            <StackPanel MaxWidth="920" Padding="24,4,24,24" Spacing="18">
+        <!-- 分页：首页 / 偏好 / 热键 / 关于（左侧栏，Windows 设置样式） -->
+        <NavigationView x:Name="Nav" Grid.Row="1"
+                        PaneDisplayMode="Left"
+                        OpenPaneLength="220"
+                        IsPaneOpen="True"
+                        IsBackButtonVisible="Collapsed"
+                        IsSettingsVisible="False"
+                        IsPaneToggleButtonVisible="False"
+                        IsTitleBarAutoPaddingEnabled="False"
+                        SelectionChanged="Nav_SelectionChanged">
+            <NavigationView.MenuItems>
+                <NavigationViewItem Content="首页" Tag="home">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE80F;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="偏好" Tag="prefs">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE713;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="热键" Tag="hotkeys">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE765;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="关于" Tag="about">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE946;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
 
-                <!-- 布局卡片 -->
-                <StackPanel Spacing="10">
+            <ScrollViewer x:Name="ContentScroller" IsTabStop="True"
+                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel MaxWidth="920" Padding="24,12,24,24" Spacing="18">
+                <StackPanel.ChildrenTransitions>
+                    <TransitionCollection>
+                        <RepositionThemeTransition />
+                    </TransitionCollection>
+                </StackPanel.ChildrenTransitions>
+
+                <!-- 首页：6 个操作卡片 -->
+                <StackPanel x:Name="HomePanel" Spacing="10">
                     <TextBlock Text="布局" Style="{StaticResource SubtitleTextBlockStyle}" />
                     <Grid x:Name="LayoutCardsHost" ColumnSpacing="10" RowSpacing="10">
                         <Grid.ColumnDefinitions>
@@ -46,15 +84,24 @@
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                     </Grid>
+                    <TextBlock Text="提示：关闭窗口会退出程序；窗口最小化时热键依然生效。"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                 </StackPanel>
 
-                <!-- 选项 -->
-                <StackPanel Spacing="10">
-                    <TextBlock Text="选项" Style="{StaticResource SubtitleTextBlockStyle}" />
-                    <Border Style="{StaticResource CardBorderStyle}">
-                        <StackPanel Spacing="0">
+                <!-- 偏好 -->
+                <StackPanel x:Name="PrefsPanel" Spacing="10" Visibility="Collapsed">
+                    <TextBlock Text="偏好设置" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <StackPanel Spacing="8">
+                        <StackPanel.ChildrenTransitions>
+                            <TransitionCollection>
+                                <RepositionThemeTransition />
+                            </TransitionCollection>
+                        </StackPanel.ChildrenTransitions>
 
-                            <Grid Padding="0,10" ColumnSpacing="16">
+                        <!-- 窗口间距 -->
+                        <Border Style="{StaticResource CardBorderStyle}" Padding="16,12">
+                            <Grid ColumnSpacing="16">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="200" />
@@ -73,10 +120,11 @@
                                            VerticalAlignment="Center" MinWidth="48"
                                            Style="{StaticResource CaptionTextBlockStyle}" />
                             </Grid>
+                        </Border>
 
-                            <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
-
-                            <Grid Padding="0,10" ColumnSpacing="16">
+                        <!-- 作用范围 -->
+                        <Border Style="{StaticResource CardBorderStyle}" Padding="16,12">
+                            <Grid ColumnSpacing="16">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
@@ -94,48 +142,115 @@
                                     <ComboBoxItem Content="所有显示器" />
                                 </ComboBox>
                             </Grid>
+                        </Border>
 
-                            <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                        <!-- 启动：可展开的卡片，默认收起（Windows 设置里分组就是这个样子） -->
+                        <Border x:Name="StartupCard"
+                                Style="{StaticResource CardBorderStyle}"
+                                Padding="0">
+                            <Expander x:Name="StartupExpander"
+                                      IsExpanded="False"
+                                      HorizontalAlignment="Stretch"
+                                      HorizontalContentAlignment="Stretch"
+                                      Background="Transparent"
+                                      BorderThickness="0"
+                                      Padding="0">
+                                <Expander.Resources>
+                                    <!-- 模板默认给标题行/展开区各铺一层卡片色，叠在卡片上会比别的卡更白；
+                                         这里让它们透出卡片本身的底色 -->
+                                    <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ExpanderContentBackground" Color="Transparent" />
+                                    <!-- 悬停反馈放在整张卡片上（见 StartupCard_PointerEntered），
+                                         不要只让箭头那一小块变灰 -->
+                                    <SolidColorBrush x:Key="ExpanderChevronPointerOverBackground" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ExpanderChevronPressedBackground" Color="Transparent" />
+                                </Expander.Resources>
+                                <Expander.Header>
+                                    <StackPanel Spacing="2" Margin="0,12,0,12">
+                                        <TextBlock Text="启动" />
+                                        <TextBlock Text="开机启动、管理员模式启动"
+                                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                </Expander.Header>
+                                <StackPanel x:Name="StartupContent" Spacing="0" Margin="0,0,0,6">
+                                    <StackPanel.RenderTransform>
+                                        <TranslateTransform />
+                                    </StackPanel.RenderTransform>
+                                    <Grid Padding="16,6,16,6" ColumnSpacing="16">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="2" VerticalAlignment="Center">
+                                            <TextBlock Text="开机启动" />
+                                            <TextBlock Text="登录 Windows 后在后台静默启动，直接可用热键"
+                                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12"
+                                                    VerticalAlignment="Center">
+                                            <TextBlock x:Name="StartupStateText" Text="关" VerticalAlignment="Center" />
+                                            <ToggleSwitch x:Name="StartupToggle" MinWidth="0"
+                                                          OnContent="" OffContent=""
+                                                          VerticalAlignment="Center"
+                                                          Toggled="StartupToggle_Toggled" />
+                                        </StackPanel>
+                                    </Grid>
 
-                            <Grid Padding="0,10" ColumnSpacing="16">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Spacing="2" VerticalAlignment="Center">
-                                    <TextBlock Text="开机启动" />
-                                    <TextBlock Text="登录 Windows 后在后台静默启动，直接可用热键"
-                                               Style="{StaticResource CaptionTextBlockStyle}"
-                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <Grid Padding="16,6,16,6" ColumnSpacing="16">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="2" VerticalAlignment="Center">
+                                            <TextBlock Text="管理员模式启动" />
+                                            <TextBlock Text="启动时请求管理员权限（UAC，下次启动生效），可操作 Windhawk 这类提权窗口；MSIX 版不支持"
+                                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12"
+                                                    VerticalAlignment="Center">
+                                            <TextBlock x:Name="ElevatedStateText" Text="关" VerticalAlignment="Center" />
+                                            <ToggleSwitch x:Name="ElevatedToggle" MinWidth="0"
+                                                          OnContent="" OffContent=""
+                                                          VerticalAlignment="Center"
+                                                          Toggled="ElevatedToggle_Toggled" />
+                                        </StackPanel>
+                                    </Grid>
                                 </StackPanel>
-                                <ToggleSwitch x:Name="StartupToggle" Grid.Column="1"
-                                              VerticalAlignment="Center"
-                                              Toggled="StartupToggle_Toggled" />
-                            </Grid>
+                            </Expander>
+                        </Border>
 
-                            <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
-
-                            <Grid Padding="0,10" ColumnSpacing="16">
+                        <!-- 分区模式 -->
+                        <Border Style="{StaticResource CardBorderStyle}" Padding="16,12">
+                            <Grid ColumnSpacing="16">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel Spacing="2" VerticalAlignment="Center">
                                     <TextBlock Text="分区模式" />
-                                    <TextBlock Text="拖动分隔线，两侧窗口一起变（Ctrl+Alt+Z）"
+                                    <TextBlock Text="开启后选一个布局进入工作区，拖动分隔线两侧一起变（Ctrl+Alt+Z 开关）"
                                                Style="{StaticResource CaptionTextBlockStyle}"
                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                 </StackPanel>
-                                <Button x:Name="ZoneButton" Grid.Column="1" Content="进入分区模式"
-                                        VerticalAlignment="Center" Click="ZoneButton_Click" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12"
+                                            VerticalAlignment="Center">
+                                    <TextBlock x:Name="ZoneStateText" Text="关" VerticalAlignment="Center" />
+                                    <ToggleSwitch x:Name="ZoneToggle" MinWidth="0"
+                                                  OnContent="" OffContent=""
+                                                  VerticalAlignment="Center"
+                                                  Toggled="ZoneToggle_Toggled" />
+                                </StackPanel>
                             </Grid>
+                        </Border>
 
-                        </StackPanel>
-                    </Border>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- 热键 -->
-                <StackPanel Spacing="10">
+                <StackPanel x:Name="HotkeysPanel" Spacing="10" Visibility="Collapsed">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
@@ -152,12 +267,61 @@
                     </Border>
                 </StackPanel>
 
-                <TextBlock Text="提示：关闭窗口会退出程序；窗口最小化时热键依然生效。"
-                           Style="{StaticResource CaptionTextBlockStyle}"
-                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                <!-- 关于 -->
+                <StackPanel x:Name="AboutPanel" Spacing="20" Visibility="Collapsed">
+                    <StackPanel Orientation="Horizontal" Spacing="18" VerticalAlignment="Center">
+                        <Border Width="64" Height="64" CornerRadius="14"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                            <Image Source="Assets/icon-preview.png" Width="52" Height="52" />
+                        </Border>
+                        <StackPanel Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="Fluent Zones" Style="{StaticResource TitleTextBlockStyle}" FontSize="28" />
+                            <TextBlock x:Name="VersionText" Text="版本 0.1.0"
+                                       Style="{StaticResource BodyTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <TextBlock Text="Fluent 风格的 Windows 窗口布局 / 分区工具：按最小尺寸智能排布、可拖拽分区、全局热键，也能操作管理员程序的窗口。"
+                               TextWrapping="Wrap" Style="{StaticResource BodyTextBlockStyle}" />
+
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="链接" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <Border Style="{StaticResource CardBorderStyle}" Padding="0">
+                            <StackPanel x:Name="AboutLinksHost" />
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="本机数据" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <Border Style="{StaticResource CardBorderStyle}" Padding="16,14">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <FontIcon Glyph="&#xE8B7;" FontSize="16"
+                                          Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <StackPanel Grid.Column="1" Spacing="2">
+                                    <TextBlock Text="设置保存在 settings.json" />
+                                    <TextBlock Text="%LOCALAPPDATA%\FluentZones\settings.json"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               IsTextSelectionEnabled="True" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+
+                    <TextBlock Text="MIT License · 如果觉得好用，可以在 Microsoft Store 里以 ¥12 支持一下开发。"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
 
             </StackPanel>
         </ScrollViewer>
+        </NavigationView>
 
         <!-- 状态栏 -->
         <Border Grid.Row="2" Padding="16,8" BorderThickness="0,1,0,0"

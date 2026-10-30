@@ -151,7 +151,8 @@ public sealed class LayoutService
             var limits = movable.ToDictionary(w => w.Handle, w => new SizeLimits(w.MinWidth, w.MinHeight));
             var groups = GroupByMonitor(participants);
             var notes = new List<string>();
-            var plan = BuildPlan(kind, groups, gap, limits, notes, mainSlot);
+            var plan = BuildPlan(kind, groups, gap, limits, notes, options.ColumnsLimit, mainSlot);
+            var unfit = new List<WindowInfo>();
 
             if (plan == null)
             {
@@ -163,7 +164,9 @@ public sealed class LayoutService
                         .OrderByDescending(w => RequiredArea(w, limits))
                         .First();
 
-                    if (BuildPlan(kind, groups, gap, limits, new List<string>(), candidate.Handle) != null)
+                    if (BuildPlan(
+                            kind, groups, gap, limits, new List<string>(),
+                            options.ColumnsLimit, candidate.Handle) != null)
                     {
                         log.Add($"  suggest main slot \"{candidate.Title}\" " +
                                 $"min={candidate.MinWidth}x{candidate.MinHeight}");
@@ -171,19 +174,42 @@ public sealed class LayoutService
                     }
                 }
 
-                var suggestion = kind == LayoutKind.Cascade
-                    ? new List<WindowInfo>()
-                    : FindMinimalMinimize(movable, kind, gap, limits);
-
-                log.Add($"  plan=null suggestion={suggestion.Count}");
-
-                if (suggestion.Count > 0)
+                // 前台优先：从 Z 序最底层开始少排几个，放不下的窗口留在原位。
+                // 只剩前台一个窗口时就是把它铺满——不应该再弹"放不下"。
+                var candidates = new List<WindowInfo>(participants);
+                while (candidates.Count > 1)
                 {
-                    return LayoutResult.Choice(kind, suggestion);
+                    unfit.Insert(0, candidates[^1]);
+                    candidates.RemoveAt(candidates.Count - 1);
+
+                    var attempt = BuildPlan(
+                        kind, GroupByMonitor(candidates), gap, limits,
+                        new List<string>(), options.ColumnsLimit, mainSlot);
+                    if (attempt != null)
+                    {
+                        plan = attempt;
+                        break;
+                    }
                 }
 
-                return LayoutResult.Fail(
-                    $"{LayoutNames.Display(kind)}：窗口最小尺寸放不下，可以改用层叠（Ctrl+Alt+1）");
+                log.Add($"  plan=null unfit={unfit.Count}");
+
+                if (plan == null)
+                {
+                    var suggestion = kind == LayoutKind.Cascade
+                        ? new List<WindowInfo>()
+                        : FindMinimalMinimize(movable, kind, gap, limits, options.ColumnsLimit);
+
+                    log.Add($"  suggestion={suggestion.Count}");
+
+                    if (suggestion.Count > 0)
+                    {
+                        return LayoutResult.Choice(kind, suggestion);
+                    }
+
+                    return LayoutResult.Fail(
+                        $"{LayoutNames.Display(kind)}：窗口最小尺寸放不下，可以改用层叠（Ctrl+Alt+1）");
+                }
             }
 
             // 只在还没有快照时记录：Ctrl+Alt+0 要回到"第一次按布局热键之前"的状态，
@@ -218,7 +244,7 @@ public sealed class LayoutService
                 }
 
                 var retryNotes = new List<string>();
-                var retry = BuildPlan(kind, groups, gap, limits, retryNotes, mainSlot);
+                var retry = BuildPlan(kind, groups, gap, limits, retryNotes, options.ColumnsLimit, mainSlot);
                 if (retry != null && retry.Count > 0)
                 {
                     log.Add("  retry after clamping");
@@ -230,6 +256,11 @@ public sealed class LayoutService
             }
 
             var parts = new List<string> { $"已排列 {plan.Count} 个窗口" };
+            if (unfit.Count > 0)
+            {
+                parts.Add($"{unfit.Count} 个窗口放不下，保持原位");
+            }
+
             if (victims.Count > 0)
             {
                 parts.Add($"最小化 {victims.Count} 个最久未使用的窗口");
@@ -285,7 +316,7 @@ public sealed class LayoutService
         var gap = Math.Clamp(options.Gap, 0, 200);
         var limits = scoped.ToDictionary(w => w.Handle, w => new SizeLimits(w.MinWidth, w.MinHeight));
         var notes = new List<string>();
-        var plan = BuildPlan(kind, GroupByMonitor(scoped.ToList()), gap, limits, notes);
+        var plan = BuildPlan(kind, GroupByMonitor(scoped.ToList()), gap, limits, notes, options.ColumnsLimit);
         var planned = plan?.ToDictionary(p => p.Window.Handle, p => p.Rect);
 
         var items = new List<PreviewItem>();
@@ -306,7 +337,7 @@ public sealed class LayoutService
         var note = string.Join("；", notes);
         if (plan == null)
         {
-            var suggestion = FindMinimalMinimize(scoped, kind, gap, limits);
+            var suggestion = FindMinimalMinimize(scoped, kind, gap, limits, options.ColumnsLimit);
             note = (note.Length > 0 ? note + "；" : string.Empty) +
                    $"放不下，建议最小化 {suggestion.Count} 个";
         }
@@ -343,6 +374,13 @@ public sealed class LayoutService
             }
 
             _lastPlan = requested.Select(p => (p.Key, p.Value)).ToList();
+
+            // 分区模式也走同一条日志，排查"拖了分隔线但窗口没动"时看这里
+            if (log.Count > 0)
+            {
+                log.Insert(0, $"=== {DateTime.Now:yyyy-MM-dd HH:mm:ss} zones place");
+                LayoutLog.Write(log);
+            }
         }
     }
 
@@ -594,6 +632,7 @@ public sealed class LayoutService
         int gap,
         Dictionary<IntPtr, SizeLimits> limits,
         List<string> notes,
+        int columnsLimit = 0,
         IntPtr preferredMain = default)
     {
         var plan = new List<PlannedWindow>();
@@ -617,7 +656,7 @@ public sealed class LayoutService
                     rects = Cascade(ordered.Count, area);
                     break;
                 case LayoutKind.Columns:
-                    rects = Columns(ordered, area, gap, limits, floors, out note);
+                    rects = Columns(ordered, area, gap, limits, floors, columnsLimit, out note);
                     break;
                 case LayoutKind.Rows:
                     rects = Rows(ordered, area, gap, limits, floors, out note);
@@ -657,7 +696,8 @@ public sealed class LayoutService
         IReadOnlyList<WindowInfo> scoped,
         LayoutKind kind,
         int gap,
-        Dictionary<IntPtr, SizeLimits> limits)
+        Dictionary<IntPtr, SizeLimits> limits,
+        int columnsLimit = 0)
     {
         for (var count = 1; count < scoped.Count; count++)
         {
@@ -669,7 +709,7 @@ public sealed class LayoutService
             }
 
             var notes = new List<string>();
-            if (BuildPlan(kind, GroupByMonitor(rest), gap, limits, notes) != null)
+            if (BuildPlan(kind, GroupByMonitor(rest), gap, limits, notes, columnsLimit) != null)
             {
                 return victims;
             }
@@ -732,7 +772,7 @@ public sealed class LayoutService
 
     private static List<WindowRect>? Columns(
         List<WindowInfo> windows, WindowRect area, int gap,
-        Dictionary<IntPtr, SizeLimits> limits, Floors floors, out string? note)
+        Dictionary<IntPtr, SizeLimits> limits, Floors floors, int columnsLimit, out string? note)
     {
         note = null;
         if (windows.Count == 1)
@@ -742,6 +782,13 @@ public sealed class LayoutService
 
         var widths = windows.Select(w => limits[w.Handle].Width).ToList();
         var perRow = LayoutMath.MaxPerCount(widths, area.Width, gap, floors.Width);
+
+        // 每行列数上限（左右并排 → 齿轮设置里选 3 / 4）
+        if (columnsLimit > 0)
+        {
+            perRow = Math.Min(perRow, columnsLimit);
+        }
+
         var slices = Slice(windows, perRow);
 
         var rowMins = slices.Select(slice => slice.Max(w => limits[w.Handle].Height)).ToList();
