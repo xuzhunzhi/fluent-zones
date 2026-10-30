@@ -337,8 +337,13 @@ public sealed class ZoneWorkspace
         CollectDividers(node.Second!, second, result);
     }
 
-    /// <summary>拖动某个分隔线到指定屏幕坐标；返回比例是否真的变了。</summary>
-    public bool Drag(ZoneNode node, int screenX, int screenY)
+    /// <summary>
+    /// 拖动某个分隔线到指定屏幕坐标；返回比例是否真的变了。
+    /// <paramref name="snap"/> 为 true（没按 Ctrl）时：两条同向、处于同一高度的横缝会合并成一条——
+    /// 拖左列的横缝，右列的横缝跟着走；两条错开时拖到接近同一高度会自动吸附。
+    /// 按住 Ctrl（snap=false）只动当前这一条，用于拆回两个“日”。
+    /// </summary>
+    public bool Drag(ZoneNode node, int screenX, int screenY, bool snap = true)
     {
         var divider = Dividers().FirstOrDefault(d => ReferenceEquals(d.Node, node));
         if (divider == null)
@@ -349,6 +354,9 @@ public sealed class ZoneWorkspace
         var region = divider.Region;
         var a = node.First!.MinimumSize(Gap);
         var b = node.Second!.MinimumSize(Gap);
+        var twin = FindTwin(node);
+        const double MergeTolerance = 0.02;
+        var mergedBefore = twin != null && Math.Abs(node.Ratio - twin.Ratio) <= MergeTolerance;
 
         if (node.Horizontal)
         {
@@ -364,6 +372,7 @@ public sealed class ZoneWorkspace
             }
 
             node.Ratio = ratio;
+            MergeTwin(twin, node, ratio, mergedBefore, MergeTolerance, snap);
             return true;
         }
 
@@ -379,6 +388,58 @@ public sealed class ZoneWorkspace
         }
 
         node.Ratio = ratioV;
+        MergeTwin(twin, node, ratioV, mergedBefore, MergeTolerance, snap);
         return true;
+    }
+
+    /// <summary>
+    /// 找与 <paramref name="node"/> 成对的另一条缝：它们是同一个父节点的两个孩子、方向相同。
+    /// 4 窗「左右两个日」里就是左右两列各自的横缝；其它布局（例如 3 列链式切分）不会误配。
+    /// </summary>
+    private ZoneNode? FindTwin(ZoneNode node)
+    {
+        var parent = FindParent(Root, node);
+        if (parent == null)
+        {
+            return null;
+        }
+
+        var candidates = new[] { parent.First, parent.Second }
+            .Where(c => c != null && c.Window == null && c.Horizontal == node.Horizontal)
+            .ToList();
+
+        return candidates.Count == 2
+            ? (ReferenceEquals(candidates[0], node) ? candidates[1] : candidates[0])
+            : null;
+    }
+
+    private static ZoneNode? FindParent(ZoneNode current, ZoneNode target)
+    {
+        if (current.Window != null)
+        {
+            return null;
+        }
+
+        if (ReferenceEquals(current.First, target) || ReferenceEquals(current.Second, target))
+        {
+            return current;
+        }
+
+        return FindParent(current.First!, target) ?? FindParent(current.Second!, target);
+    }
+
+    private static void MergeTwin(
+        ZoneNode? twin, ZoneNode node, double ratio, bool mergedBefore, double tolerance, bool snap)
+    {
+        if (twin == null || !snap)
+        {
+            return;
+        }
+
+        // 已经合并（同一高度）→ 一起走；错开时拖到接近同一高度 → 吸附合并
+        if (mergedBefore || Math.Abs(ratio - twin.Ratio) <= tolerance)
+        {
+            twin.Ratio = ratio;
+        }
     }
 }

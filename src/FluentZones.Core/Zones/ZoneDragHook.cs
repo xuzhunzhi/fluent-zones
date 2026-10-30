@@ -131,7 +131,9 @@ public sealed class ZoneDragHook : IDisposable
 
                 if (dragging != null && ws != null)
                 {
-                    if (ws.Drag(dragging, info.pt.X, info.pt.Y))
+                    // 按住 Ctrl 只动当前这条缝（拆开两个日）；否则同高的两条横缝合并成一条一起走
+                    var snap = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CONTROL) & 0x8000) == 0;
+                    if (ws.Drag(dragging, info.pt.X, info.pt.Y, snap))
                     {
                         Changed?.Invoke(ws);
                     }
