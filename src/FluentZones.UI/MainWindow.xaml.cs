@@ -2024,7 +2024,10 @@ public sealed partial class MainWindow : Window
                 new[] { lt, lb, right }, area, gap, (double)top / usableH);
         }
 
-        return null;
+        // 没有能全放下的分配时也保持「左日右口」的形状，按自然顺序铺（超出的靠窗口自身撑开）
+        var naturalOrder = windows;
+        return ZoneWorkspace.CreateLeftDay(
+            new[] { naturalOrder[0], naturalOrder[1], naturalOrder[2] }, area, gap, 0.5);
     }
 
     private ZoneWorkspace? TryCreateTwoRows(List<WindowInfo> windows, WindowRect area, int gap)
@@ -2070,7 +2073,9 @@ public sealed partial class MainWindow : Window
                 new[] { lt, rt, lb, rb }, area, gap, (double)top / usableH);
         }
 
-        return null;
+        // 没有能全放下的分配时也保持「左右两个日」的形状，按自然顺序铺
+        return ZoneWorkspace.CreateTwoRows(
+            new[] { windows[0], windows[2], windows[1], windows[3] }, area, gap, 0.62);
     }
 
     private static List<int[]> Permutations(int[] items)
