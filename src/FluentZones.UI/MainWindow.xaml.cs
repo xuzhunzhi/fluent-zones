@@ -46,9 +46,8 @@ public sealed partial class MainWindow : Window
     private WinEventWatcher? _zoneWatcher;
     private bool _zoneSyncQueued;
 
-    // 分区模式的边框：由 DWM 画在窗口自己身上；间隙固定 6px（与 22:21 那版一致）
+    // 分区模式的边框：由 DWM 画在窗口自己身上；间隙与一次性布局共用设置里的「窗口间距」
     private const int ZoneMargin = 4;
-    private const int ZoneMinGap = 6;
     private HashSet<IntPtr> _zoneWindowHandles = new();
     private readonly HashSet<IntPtr> _zoneBordered = new();
     private readonly Dictionary<IntPtr, int> _zoneStyles = new();
@@ -1657,7 +1656,7 @@ public sealed partial class MainWindow : Window
 
             var area = ZoneArea(monitor);
             var effective = kind ?? (windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid);
-            var workspace = CreateZoneWorkspace(effective, windows, area, ZoneMinGap);
+            var workspace = CreateZoneWorkspace(effective, windows, area, CurrentOptions().Gap);
 
             // 只记第一次进入前的窗口位置：Ctrl+Alt+0 永远回到非工作区状态
             if (_zoneWorkspace == null)
@@ -1869,7 +1868,7 @@ public sealed partial class MainWindow : Window
             var newcomers = windows.Where(w => !oldHandles.Contains(w.Handle)).ToList();
             _zoneWindowHandles = handles;
 
-            var gap = ZoneMinGap;
+            var gap = CurrentOptions().Gap;
             var area = ZoneArea(_zoneMonitor);
             var candidates = new List<WindowInfo>(windows);
 
@@ -1962,143 +1961,14 @@ public sealed partial class MainWindow : Window
         // 只改「网格平铺」：3 窗左日右口、4 窗左右两个日；其它布局（主窗在左 / 左右并排 / 上下堆叠）不动
         if (kind == LayoutKind.Grid)
         {
-            if (windows.Count == 3)
+            var planned = ZoneWorkspace.PlanGrid(windows, area, gap);
+            if (planned != null)
             {
-                var leftDay = TryCreateLeftDay(windows, area, gap);
-                if (leftDay != null)
-                {
-                    return leftDay;
-                }
-            }
-
-            if (windows.Count == 4)
-            {
-                var twoRows = TryCreateTwoRows(windows, area, gap);
-                if (twoRows != null)
-                {
-                    return twoRows;
-                }
+                return planned;
             }
         }
 
         return ZoneWorkspace.Create(kind, windows, area, gap);
-    }
-
-    private ZoneWorkspace? TryCreateLeftDay(List<WindowInfo> windows, WindowRect area, int gap)
-    {
-        // 顺序是 [左上, 左下, 右]；自然：主窗=第 1 个、副主窗=第 2 个、右=第 3 个
-        var natural = new[] { 0, 1, 2 };
-        var orders = Permutations(new[] { 0, 1, 2 })
-            .OrderByDescending(p => p.SequenceEqual(natural))
-            .ToList();
-
-        var usableW = area.Width - gap;
-        var leftW = (int)Math.Round(usableW * 0.62);
-        var rightW = usableW - leftW;
-        var usableH = area.Height - gap;
-
-        // 左列上下先按 50/50，最小高度不够时再按需加高（副主窗高度 ≤50%）
-        var half = (int)Math.Floor(usableH * 0.5);
-
-        foreach (var order in orders)
-        {
-            var lt = windows[order[0]];
-            var lb = windows[order[1]];
-            var right = windows[order[2]];
-
-            if (leftW < lt.MinWidth || leftW < lb.MinWidth || rightW < right.MinWidth)
-            {
-                continue;
-            }
-
-            var bottom = Math.Max(half, lb.MinHeight);
-            bottom = Math.Min(bottom, half);
-            var top = usableH - bottom;
-
-            if (top < lt.MinHeight || bottom < lb.MinHeight || usableH < right.MinHeight)
-            {
-                continue;
-            }
-
-            return ZoneWorkspace.CreateLeftDay(
-                new[] { lt, lb, right }, area, gap, (double)top / usableH);
-        }
-
-        // 没有能全放下的分配时也保持「左日右口」的形状，按自然顺序铺（超出的靠窗口自身撑开）
-        var naturalOrder = windows;
-        return ZoneWorkspace.CreateLeftDay(
-            new[] { naturalOrder[0], naturalOrder[1], naturalOrder[2] }, area, gap, 0.5);
-    }
-
-    private ZoneWorkspace? TryCreateTwoRows(List<WindowInfo> windows, WindowRect area, int gap)
-    {
-        // 顺序是 [左上, 右上, 左下, 右下]；自然顺序：主窗=第 1 个，副主窗=第 2 个
-        var natural = new[] { 0, 2, 1, 3 };
-        var orders = Permutations(new[] { 0, 1, 2, 3 })
-            .OrderByDescending(p => p.SequenceEqual(natural))
-            .ToList();
-
-        var usableW = area.Width - gap;
-        var leftW = (int)Math.Round(usableW * 0.62);
-        var rightW = usableW - leftW;
-        var usableH = area.Height - gap;
-        var maxBottom = (int)Math.Floor(usableH * 0.5);
-
-        foreach (var order in orders)
-        {
-            var lt = windows[order[0]];
-            var rt = windows[order[1]];
-            var lb = windows[order[2]];
-            var rb = windows[order[3]];
-
-            if (leftW < lt.MinWidth || leftW < lb.MinWidth ||
-                rightW < rt.MinWidth || rightW < rb.MinWidth)
-            {
-                continue;
-            }
-
-            // 左下可以长高（≤50%），把副主窗的最小高度塞进去
-            var bottom = Math.Max((int)Math.Round(usableH * 0.38), lb.MinHeight);
-            bottom = Math.Min(bottom, maxBottom);
-            var top = usableH - bottom;
-            var half = usableH / 2;
-
-            if (top < lt.MinHeight || bottom < lb.MinHeight ||
-                half < rt.MinHeight || half < rb.MinHeight)
-            {
-                continue;
-            }
-
-            return ZoneWorkspace.CreateTwoRows(
-                new[] { lt, rt, lb, rb }, area, gap, (double)top / usableH);
-        }
-
-        // 没有能全放下的分配时也保持「左右两个日」的形状，按自然顺序铺
-        return ZoneWorkspace.CreateTwoRows(
-            new[] { windows[0], windows[2], windows[1], windows[3] }, area, gap, 0.62);
-    }
-
-    private static List<int[]> Permutations(int[] items)
-    {
-        var result = new List<int[]>();
-        void Walk(int index)
-        {
-            if (index == items.Length)
-            {
-                result.Add((int[])items.Clone());
-                return;
-            }
-
-            for (var i = index; i < items.Length; i++)
-            {
-                (items[index], items[i]) = (items[i], items[index]);
-                Walk(index + 1);
-                (items[index], items[i]) = (items[i], items[index]);
-            }
-        }
-
-        Walk(0);
-        return result;
     }
 
     private async Task<bool> AskZoneOverflowAsync(int victims, IReadOnlyList<WindowInfo> newcomers)

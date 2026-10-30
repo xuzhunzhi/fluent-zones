@@ -63,7 +63,7 @@ public sealed class AppSettings
 
     public static AppSettings CreateDefault() => new()
     {
-        Gap = 0,
+        Gap = 6,
         Scope = LayoutScope.CursorMonitor,
         StartWithWindows = false,
         LayoutLimits = new Dictionary<string, int>
@@ -113,6 +113,9 @@ public static class SettingsStore
 
                 if (settings != null)
                 {
+                    // 间隙统一由设置提供，下限 6（一次性布局与工作区共用）
+                    settings.Gap = Math.Clamp(settings.Gap, 6, 40);
+
                     if (settings.Hotkeys.Count == 0)
                     {
                         settings.Hotkeys = AppSettings.CreateDefault().Hotkeys;

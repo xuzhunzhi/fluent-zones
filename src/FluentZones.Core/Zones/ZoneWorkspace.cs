@@ -159,6 +159,124 @@ public sealed class ZoneWorkspace
         return new ZoneWorkspace(ZoneNode.Split(true, left, ZoneNode.Leaf(windows[2]), 0.62), area, gap);
     }
 
+    /// <summary>
+    /// 网格平铺的槽位规划：3 窗左日右口、4 窗左右两个日；枚举窗口分配并按最小尺寸选位。
+    /// 一次性布局与工作区共用同一份规划（工作区只是把结果留下来）。
+    /// </summary>
+    public static ZoneWorkspace? PlanGrid(IReadOnlyList<WindowInfo> windows, WindowRect area, int gap)
+    {
+        if (windows.Count == 3)
+        {
+            return PlanLeftDay(windows, area, gap);
+        }
+
+        if (windows.Count == 4)
+        {
+            return PlanTwoRows(windows, area, gap);
+        }
+
+        return null;
+    }
+
+    private static ZoneWorkspace PlanLeftDay(IReadOnlyList<WindowInfo> windows, WindowRect area, int gap)
+    {
+        var natural = new[] { 0, 1, 2 };
+        var orders = Permutations(new[] { 0, 1, 2 })
+            .OrderByDescending(p => p.SequenceEqual(natural));
+
+        var usableW = area.Width - gap;
+        var leftW = (int)Math.Round(usableW * 0.62);
+        var rightW = usableW - leftW;
+        var usableH = area.Height - gap;
+        var half = (int)Math.Floor(usableH * 0.5);
+
+        foreach (var order in orders)
+        {
+            var lt = windows[order[0]];
+            var lb = windows[order[1]];
+            var right = windows[order[2]];
+
+            if (leftW < lt.MinWidth || leftW < lb.MinWidth || rightW < right.MinWidth ||
+                half < lt.MinHeight || half < lb.MinHeight || usableH < right.MinHeight)
+            {
+                continue;
+            }
+
+            return CreateLeftDay(new[] { lt, lb, right }, area, gap, 0.5);
+        }
+
+        // 没有能全放下的分配时也保持「左日右口」的形状，按自然顺序铺
+        return CreateLeftDay(new[] { windows[0], windows[1], windows[2] }, area, gap, 0.5);
+    }
+
+    private static ZoneWorkspace PlanTwoRows(IReadOnlyList<WindowInfo> windows, WindowRect area, int gap)
+    {
+        var natural = new[] { 0, 2, 1, 3 };
+        var orders = Permutations(new[] { 0, 1, 2, 3 })
+            .OrderByDescending(p => p.SequenceEqual(natural));
+
+        var usableW = area.Width - gap;
+        var leftW = (int)Math.Round(usableW * 0.62);
+        var rightW = usableW - leftW;
+        var usableH = area.Height - gap;
+        var maxBottom = (int)Math.Floor(usableH * 0.5);
+
+        foreach (var order in orders)
+        {
+            var lt = windows[order[0]];
+            var rt = windows[order[1]];
+            var lb = windows[order[2]];
+            var rb = windows[order[3]];
+
+            if (leftW < lt.MinWidth || leftW < lb.MinWidth ||
+                rightW < rt.MinWidth || rightW < rb.MinWidth)
+            {
+                continue;
+            }
+
+            // 左下可以长高（≤50%），把副主窗的最小高度塞进去
+            var bottom = Math.Max((int)Math.Round(usableH * 0.38), lb.MinHeight);
+            bottom = Math.Min(bottom, maxBottom);
+            var top = usableH - bottom;
+            var half = usableH / 2;
+
+            if (top < lt.MinHeight || bottom < lb.MinHeight ||
+                half < rt.MinHeight || half < rb.MinHeight)
+            {
+                continue;
+            }
+
+            return CreateTwoRows(new[] { lt, rt, lb, rb }, area, gap, (double)top / usableH);
+        }
+
+        // 没有能全放下的分配时也保持「左右两个日」的形状，按自然顺序铺
+        return CreateTwoRows(
+            new[] { windows[0], windows[2], windows[1], windows[3] }, area, gap, 0.62);
+    }
+
+    private static List<int[]> Permutations(int[] items)
+    {
+        var result = new List<int[]>();
+        void Walk(int index)
+        {
+            if (index == items.Length)
+            {
+                result.Add((int[])items.Clone());
+                return;
+            }
+
+            for (var i = index; i < items.Length; i++)
+            {
+                (items[index], items[i]) = (items[i], items[index]);
+                Walk(index + 1);
+                (items[index], items[i]) = (items[i], items[index]);
+            }
+        }
+
+        Walk(0);
+        return result;
+    }
+
     /// <summary>算出每个窗口的目标矩形（可见边框）。</summary>
     public List<ZonePlacement> Compute()
     {

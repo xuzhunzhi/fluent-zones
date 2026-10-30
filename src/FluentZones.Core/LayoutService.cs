@@ -925,7 +925,8 @@ public sealed class LayoutService
         List<WindowInfo> ordered, WindowRect area, int gap,
         Dictionary<IntPtr, SizeLimits> limits, out List<WindowRect> rects)
     {
-        var mosaic = ZoneWorkspace.Create(LayoutKind.Grid, ordered, area, gap).Compute();
+        var planned = ZoneWorkspace.PlanGrid(ordered, area, gap);
+        var mosaic = (planned ?? ZoneWorkspace.Create(LayoutKind.Grid, ordered, area, gap)).Compute();
         var byHandle = new Dictionary<IntPtr, WindowRect>(mosaic.Count);
         foreach (var placement in mosaic)
         {
