@@ -67,6 +67,10 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
 
+        // 上次被强杀 / 崩溃时可能没恢复窗口边框，启动时先补回来
+        ZoneStyleStore.RestoreAll();
+        ZoneStyleStore.RepairFromLog();
+
         _settings = SettingsStore.Load();
 
         Title = "Fluent Zones";
@@ -180,6 +184,15 @@ public sealed partial class MainWindow : Window
     private void OnClosed(object sender, WindowEventArgs args)
     {
         StopZoneWatch();
+
+        foreach (var handle in _zoneBordered.ToList())
+        {
+            RestoreZoneStyle(handle);
+        }
+
+        _zoneBordered.Clear();
+        ZoneStyleStore.Save(_zoneStyles);
+
         _zoneOverlay?.Dispose();
         _hotkeys.Dispose();
     }
@@ -1747,6 +1760,8 @@ public sealed partial class MainWindow : Window
             _zoneStyles[handle] = WindowOps.RemoveResizeBorder(handle);
             _zoneBordered.Add(handle);
         }
+
+        ZoneStyleStore.Save(_zoneStyles);
     }
 
     private void RestoreZoneStyle(IntPtr handle)
@@ -1772,6 +1787,7 @@ public sealed partial class MainWindow : Window
 
         _zoneBordered.Clear();
         _zoneStyles.Clear();
+        ZoneStyleStore.Save(_zoneStyles);
         _zoneOverlay?.Hide();
         _zoneWorkspace = null;
         UpdateStatus("已退出分区模式，Ctrl+Alt+0 可还原到进入前的位置", StatusLevel.Info);
