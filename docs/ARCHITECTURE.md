@@ -17,6 +17,8 @@ src/FluentZones.Core/         纯 C#，无 UI 依赖，可单测
   Zones/                      v0.2 分区工作区（重写中）
     ZoneNode.cs               切分树：叶子=窗口，节点=方向+比例
     ZoneWorkspace.cs          切分树 → 矩形；拖拽改比例
+    ZoneDragHook.cs           低层鼠标钩子：拖分隔线改比例
+    ZoneSession.cs            工作区状态机：进入/退出、窗口跟踪、边框、规划（UI 只做胶水）
     ZoneOverlay.cs            置顶分层覆盖层：画分隔线、命中、拖拽
 
 src/FluentZones.UI/           WinUI 3 前端（未打包）
@@ -57,6 +59,8 @@ ZoneController  { 进入/退出、入槽、踢出、轮换 }  ← 事件编排
 WinEventWatcher { SHOW / DESTROY / MINIMIZE / FOREGROUND }
 ZoneOverlay     分层窗口：画线 + 命中 + 拖拽
 ```
+
+> `ZoneController` 的落地形态是 `src/FluentZones.Core/Zones/ZoneSession.cs`：切分树、窗口句柄、显示器、布局类型、边框、拖拽钩子与窗口监听都归它管；`MainWindow` 只注入窗口枚举/摆放（`LayoutService`）、状态栏、对话框、卡片高亮与快照。
 
 事件流：
 

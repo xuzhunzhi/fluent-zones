@@ -41,18 +41,13 @@ public sealed partial class MainWindow : Window
     private bool _hotkeysAvailable;
     private bool _prompting;
     private bool _elevationPrompted;
-    private ZoneDragHook? _zoneOverlay;
-    private ZoneWorkspace? _zoneWorkspace;
-    private WinEventWatcher? _zoneWatcher;
-    private bool _zoneSyncQueued;
+
+    // 分区工作区的状态机（切分树、窗口句柄、显示器、布局类型、边框、拖拽钩子、窗口事件）都在 Core；
+    // 这里只保留开关、窗口的收集/摆放、状态栏、对话框、卡片高亮和快照这些 UI 胶水。
+    private readonly ZoneSession _zones;
 
     // 分区模式的边框：由 DWM 画在窗口自己身上；间隙与一次性布局共用设置里的「窗口间距」
     private const int ZoneMargin = 4;
-    private HashSet<IntPtr> _zoneWindowHandles = new();
-    private readonly HashSet<IntPtr> _zoneBordered = new();
-    private readonly Dictionary<IntPtr, int> _zoneStyles = new();
-    private IntPtr _zoneMonitor;
-    private LayoutKind _zoneLayoutKind;
 
     private enum StatusLevel
     {
@@ -71,6 +66,18 @@ public sealed partial class MainWindow : Window
         ZoneStyleStore.RepairFromLog();
 
         _settings = SettingsStore.Load();
+
+        // 工作区状态机在 Core：这里只注入「枚举窗口 / 量可用区域 / 取间隙 / 回 UI 线程」四件胶水
+        _zones = new ZoneSession(
+            collectWindows: () => _layouts.GetWindows(CurrentOptions().Scope),
+            getArea: ZoneArea,
+            getGap: () => CurrentOptions().Gap,
+            postToUi: PostToUi);
+        _zones.PlaceRequested += placements =>
+            _layouts.PlaceRects(placements.Select(p => (p.Window.Handle, p.Rect)));
+        _zones.StatusRequested += OnZoneStatus;
+        _zones.OverflowRequested = AskZoneOverflowAsync;
+        _zones.IsInteractionBusy = () => _prompting;
 
         Title = "Fluent Zones";
         AppWindow.Title = "Fluent Zones";
@@ -182,17 +189,8 @@ public sealed partial class MainWindow : Window
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
-        StopZoneWatch();
-
-        foreach (var handle in _zoneBordered.ToList())
-        {
-            RestoreZoneStyle(handle);
-        }
-
-        _zoneBordered.Clear();
-        ZoneStyleStore.Save(_zoneStyles);
-
-        _zoneOverlay?.Dispose();
+        // 恢复工作区里被去掉的窗口边框（并清掉落盘记录），再释放拖拽钩子与窗口监听
+        _zones.Dispose();
         _hotkeys.Dispose();
     }
 
@@ -1281,15 +1279,15 @@ public sealed partial class MainWindow : Window
     private async Task ApplyLayoutAsync(LayoutKind kind, LayoutScope scope, IntPtr forcedMain = default)
     {
         // 分区能力开启时：选布局 = 按该布局进入工作区（层叠没有可拖的分隔线，仍按一次性排）
-        if (kind != LayoutKind.Cascade && (ZoneToggle.IsOn || _zoneWorkspace != null))
+        if (kind != LayoutKind.Cascade && (ZoneToggle.IsOn || _zones.IsActive))
         {
             EnterZones(scope, kind);
             return;
         }
 
-        if (_zoneWorkspace != null)
+        if (_zones.IsActive)
         {
-            ExitZones();
+            _zones.Exit();
         }
 
         try
@@ -1547,9 +1545,9 @@ public sealed partial class MainWindow : Window
 
     private void RestoreLayout()
     {
-        if (_zoneWorkspace != null)
+        if (_zones.IsActive)
         {
-            ExitZones();
+            _zones.Exit();
         }
 
         try
@@ -1576,7 +1574,7 @@ public sealed partial class MainWindow : Window
         // 开关只表示「开启分区能力」：打开时不动窗口，等你选一个布局再进工作区
         if (ZoneToggle.IsOn)
         {
-            if (_zoneWorkspace == null)
+            if (!_zones.IsActive)
             {
                 UpdateStatus("分区模式已开启：选一个布局（卡片或 Ctrl+Alt+1..5）进入工作区", StatusLevel.Info);
             }
@@ -1584,9 +1582,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (_zoneWorkspace != null)
+        if (_zones.IsActive)
         {
-            ExitZones();
+            _zones.Exit();
             UpdateStatus("分区模式已关闭，窗口保持当前布局；Ctrl+Alt+0 可还原", StatusLevel.Info);
         }
         else
@@ -1595,7 +1593,6 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    /// <summary>热键 Ctrl+Alt+Z：进入 / 退出工作区（开关同步）。</summary>
     /// <summary>
     /// 热键 Ctrl+Alt+Z：只开关「分区模式」能力，不直接铺窗口；
     /// 进入工作区仍然靠选布局（卡片或 Ctrl+Alt+1..5）。
@@ -1605,9 +1602,9 @@ public sealed partial class MainWindow : Window
         if (ZoneToggle.IsOn)
         {
             SetZoneToggle(false);
-            if (_zoneWorkspace != null)
+            if (_zones.IsActive)
             {
-                ExitZones();
+                _zones.Exit();
                 UpdateStatus("分区模式已关闭，窗口保持当前布局；Ctrl+Alt+0 可还原", StatusLevel.Info);
             }
             else
@@ -1625,6 +1622,7 @@ public sealed partial class MainWindow : Window
     /// <summary>
     /// 进入工作区；已经在工作区里就按新布局重建。
     /// <paramref name="kind"/> 为空时按窗口数量自动选（≤3 左右并排，否则网格）。
+    /// 这里只做窗口筛选、首次快照和状态栏；切分树 / 边框 / 拖拽 / 窗口事件都在 <see cref="ZoneSession"/>。
     /// </summary>
     private void EnterZones(LayoutScope scope, LayoutKind? kind = null)
     {
@@ -1654,25 +1652,15 @@ public sealed partial class MainWindow : Window
                 monitor = windows[0].Monitor;
             }
 
-            var area = ZoneArea(monitor);
             var effective = kind ?? (windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid);
-            var workspace = CreateZoneWorkspace(effective, windows, area, CurrentOptions().Gap);
 
             // 只记第一次进入前的窗口位置：Ctrl+Alt+0 永远回到非工作区状态
-            if (_zoneWorkspace == null)
+            if (!_zones.IsActive)
             {
                 _layouts.CaptureSnapshot(windows);
             }
 
-            _zoneWorkspace = workspace;
-
-            EnsureOverlay().Show(workspace);
-            ApplyZone(workspace);
-
-            _zoneLayoutKind = effective;
-            _zoneMonitor = monitor;
-            _zoneWindowHandles = new HashSet<IntPtr>(windows.Select(w => w.Handle));
-            StartZoneWatch();
+            _zones.Enter(effective, windows, monitor);
 
             SetZoneToggle(true);
             HighlightCard(effective);
@@ -1687,7 +1675,7 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             UpdateStatus("进入分区模式失败：" + ex.Message, StatusLevel.Error);
-            ExitZones();
+            _zones.Exit();
         }
     }
 
@@ -1700,245 +1688,6 @@ public sealed partial class MainWindow : Window
         UpdateToggleText(ZoneStateText, ZoneToggle);
     }
 
-    private ZoneDragHook EnsureOverlay()
-    {
-        if (_zoneOverlay != null)
-        {
-            return _zoneOverlay;
-        }
-
-        _zoneOverlay = new ZoneDragHook();
-        _zoneOverlay.Start();
-        _zoneOverlay.Changed += workspace =>
-        {
-            if (DispatcherQueue.HasThreadAccess)
-            {
-                ApplyZone(workspace);
-            }
-            else
-            {
-                DispatcherQueue.TryEnqueue(() => ApplyZone(workspace));
-            }
-        };
-
-        return _zoneOverlay;
-    }
-
-    private void ApplyZone(ZoneWorkspace workspace)
-    {
-        if (_zoneWorkspace == null)
-        {
-            return;
-        }
-
-        var placements = workspace.Compute();
-
-        // 先把窗口自己的缩放边框去掉，再按分区摆放：边距只由我们的分隔线调整
-        SyncZoneBorders(placements);
-        _layouts.PlaceRects(placements.Select(p => (p.Window.Handle, p.Rect)));
-    }
-
-    /// <summary>
-    /// 工作区窗口：套上 DWM 强调色边框，并临时去掉 WS_THICKFRAME——
-    /// 这样拖窗口自己的边不会缩放，只能拖窗口之间的分隔线。
-    /// </summary>
-    private void SyncZoneBorders(IReadOnlyList<ZonePlacement> placements)
-    {
-        var handles = placements.Select(p => p.Window.Handle).ToHashSet();
-
-        foreach (var stale in _zoneBordered.Where(h => !handles.Contains(h)).ToList())
-        {
-            WindowOps.ResetBorderColor(stale);
-            RestoreZoneStyle(stale);
-            _zoneBordered.Remove(stale);
-        }
-
-        foreach (var handle in handles.Where(h => !_zoneBordered.Contains(h)))
-        {
-            WindowOps.SetBorderColor(handle, WindowOps.ZoneBorderColor);
-            _zoneStyles[handle] = WindowOps.RemoveResizeBorder(handle);
-            _zoneBordered.Add(handle);
-        }
-
-        ZoneStyleStore.Save(_zoneStyles);
-    }
-
-    private void RestoreZoneStyle(IntPtr handle)
-    {
-        if (!_zoneStyles.TryGetValue(handle, out var style))
-        {
-            return;
-        }
-
-        _zoneStyles.Remove(handle);
-        WindowOps.RestoreStyle(handle, style);
-    }
-
-    private void ExitZones()
-    {
-        StopZoneWatch();
-
-        foreach (var handle in _zoneBordered)
-        {
-            WindowOps.ResetBorderColor(handle);
-            RestoreZoneStyle(handle);
-        }
-
-        _zoneBordered.Clear();
-        _zoneStyles.Clear();
-        ZoneStyleStore.Save(_zoneStyles);
-        _zoneOverlay?.Hide();
-        _zoneWorkspace = null;
-        UpdateStatus("已退出分区模式，Ctrl+Alt+0 可还原到进入前的位置", StatusLevel.Info);
-    }
-
-    /// <summary>
-    /// 工作区开启期间监听顶层窗口事件（SetWinEventHook）：新窗口 SHOW 时自动入槽，
-    /// 窗口销毁/隐藏时重新铺开。事件会连发几次，用 _zoneSyncQueued 合并成一次重排。
-    /// </summary>
-    private void StartZoneWatch()
-    {
-        if (_zoneWatcher != null)
-        {
-            return;
-        }
-
-        _zoneWatcher = new WinEventWatcher();
-        _zoneWatcher.WindowEvent += OnZoneWindowEvent;
-    }
-
-    private void StopZoneWatch()
-    {
-        if (_zoneWatcher == null)
-        {
-            return;
-        }
-
-        _zoneWatcher.WindowEvent -= OnZoneWindowEvent;
-        _zoneWatcher.Dispose();
-        _zoneWatcher = null;
-        _zoneSyncQueued = false;
-    }
-
-    private void OnZoneWindowEvent(IntPtr hwnd, uint eventType)
-    {
-        if (_zoneWorkspace == null || _zoneSyncQueued)
-        {
-            return;
-        }
-
-        _zoneSyncQueued = true;
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            _zoneSyncQueued = false;
-            SyncZoneWindows();
-        });
-    }
-
-    private void SyncZoneWindows()
-    {
-        _ = SyncZoneWindowsAsync();
-    }
-
-    private async Task SyncZoneWindowsAsync()
-    {
-        if (_zoneWorkspace == null || _prompting)
-        {
-            return;
-        }
-
-        try
-        {
-            var windows = _layouts.GetWindows(CurrentOptions().Scope)
-                .Where(w => !w.CannotMove && w.Monitor == _zoneMonitor)
-                .ToList();
-
-            if (windows.Count == 0)
-            {
-                return;
-            }
-
-            var handles = new HashSet<IntPtr>(windows.Select(w => w.Handle));
-            if (handles.SetEquals(_zoneWindowHandles))
-            {
-                return;
-            }
-
-            var oldHandles = _zoneWindowHandles;
-            var newcomers = windows.Where(w => !oldHandles.Contains(w.Handle)).ToList();
-            _zoneWindowHandles = handles;
-
-            var gap = CurrentOptions().Gap;
-            var area = ZoneArea(_zoneMonitor);
-            var candidates = new List<WindowInfo>(windows);
-
-            while (true)
-            {
-                var workspace = CreateZoneWorkspace(_zoneLayoutKind, candidates, area, gap);
-                if (ZoneFits(workspace))
-                {
-                    _zoneWorkspace = workspace;
-                    _zoneOverlay?.Refresh(workspace);
-                    ApplyZone(workspace);
-
-                    var change = newcomers.Count > 0
-                        ? $"新窗口已加入（{candidates.Count} 个）"
-                        : $"窗口已离开（{candidates.Count} 个）";
-                    UpdateStatus($"分区模式（{LayoutNames.Display(_zoneLayoutKind)}）：{change}", StatusLevel.Info);
-                    return;
-                }
-
-                // 放不下：从 Z 序最底层开始找"最小化几个才能排下"（新窗口永远保留）
-                var removable = candidates.AsEnumerable().Reverse()
-                    .Where(w => !newcomers.Any(n => n.Handle == w.Handle))
-                    .ToList();
-
-                List<WindowInfo>? victims = null;
-                for (var k = 1; k <= removable.Count; k++)
-                {
-                    var drop = removable.Take(k).ToList();
-                    var subset = candidates.Where(w => !drop.Contains(w)).ToList();
-                    var attempt = CreateZoneWorkspace(_zoneLayoutKind, subset, area, gap);
-                    if (ZoneFits(attempt))
-                    {
-                        victims = drop;
-                        break;
-                    }
-                }
-
-                if (victims == null)
-                {
-                    UpdateStatus(
-                        "分区模式：新窗口最小尺寸比工作区还大，无法加入",
-                        StatusLevel.Warn);
-                    return;
-                }
-
-                if (!await AskZoneOverflowAsync(victims.Count, newcomers))
-                {
-                    UpdateStatus("分区模式：新窗口未加入（工作区放不下）", StatusLevel.Warn);
-                    return;
-                }
-
-                foreach (var victim in victims)
-                {
-                    WindowOps.Minimize(victim.Handle);
-                }
-
-                candidates = candidates.Where(w => !victims.Contains(w)).ToList();
-            }
-        }
-        catch (Exception ex)
-        {
-            UpdateStatus("更新工作区失败：" + ex.Message, StatusLevel.Error);
-        }
-    }
-
-    /// <summary>每个窗口分到的格子都不小于它声明的最小尺寸。</summary>
-    private static bool ZoneFits(ZoneWorkspace workspace) =>
-        workspace.Compute().All(p =>
-            p.Rect.Width >= p.Window.MinWidth && p.Rect.Height >= p.Window.MinHeight);
-
     /// <summary>工作区里窗口的可用区域：四边留出画边框的边距。</summary>
     private WindowRect ZoneArea(IntPtr monitor)
     {
@@ -1948,27 +1697,6 @@ public sealed partial class MainWindow : Window
             area.Top + ZoneMargin,
             Math.Max(area.Width - ZoneMargin * 2, 80),
             Math.Max(area.Height - ZoneMargin * 2, 80));
-    }
-
-    /// <summary>
-    /// 4 个窗口时用「左右两个日」：左上主窗 62×62、左下副主窗 62×38、右列上下各 50。
-    /// 枚举 4 个窗口到 4 个格子的分配，挑一个所有窗口声明的最小尺寸都放得下的；
-    /// 左下高度不够时可在 50% 以内加高（不超过 50%）。
-    /// </summary>
-    private ZoneWorkspace CreateZoneWorkspace(
-        LayoutKind kind, List<WindowInfo> windows, WindowRect area, int gap)
-    {
-        // 只改「网格平铺」：3 窗左日右口、4 窗左右两个日；其它布局（主窗在左 / 左右并排 / 上下堆叠）不动
-        if (kind == LayoutKind.Grid)
-        {
-            var planned = ZoneWorkspace.PlanGrid(windows, area, gap);
-            if (planned != null)
-            {
-                return planned;
-            }
-        }
-
-        return ZoneWorkspace.Create(kind, windows, area, gap);
     }
 
     private async Task<bool> AskZoneOverflowAsync(int victims, IReadOnlyList<WindowInfo> newcomers)
@@ -2005,6 +1733,19 @@ public sealed partial class MainWindow : Window
             _prompting = false;
         }
     }
+
+    /// <summary>把拖拽钩子 / 窗口事件的回调送回 UI 线程（与原来 DispatcherQueue.TryEnqueue 的时序一致）。</summary>
+    private void PostToUi(Action action) => DispatcherQueue.TryEnqueue(() => action());
+
+    /// <summary>ZoneSession 的状态栏消息映射到界面的 <see cref="StatusLevel"/>。</summary>
+    private void OnZoneStatus(string message, ZoneStatusLevel level) =>
+        UpdateStatus(message, level switch
+        {
+            ZoneStatusLevel.Success => StatusLevel.Success,
+            ZoneStatusLevel.Warn => StatusLevel.Warn,
+            ZoneStatusLevel.Error => StatusLevel.Error,
+            _ => StatusLevel.Info,
+        });
 
     private LayoutOptions CurrentOptions() => new(
         (int)Math.Round(GapSlider.Value),
