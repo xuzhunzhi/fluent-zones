@@ -22,6 +22,7 @@ public sealed class ZoneSession : IDisposable
     private readonly Func<IReadOnlyList<WindowInfo>> _collectWindows;
     private readonly Func<IntPtr, WindowRect> _getArea;
     private readonly Func<int> _getGap;
+    private readonly Func<int> _getColumnsLimit;
     private readonly Action<Action>? _postToUi;
 
     private readonly HashSet<IntPtr> _windowHandles = new();
@@ -32,19 +33,27 @@ public sealed class ZoneSession : IDisposable
     private WinEventWatcher? _watcher;
     private bool _syncQueued;
 
+    /// <summary>会话代次：Enter / Exit 时递增，异步对话框返回后据此放弃过期操作。</summary>
+    private int _sessionGeneration;
+
     /// <param name="collectWindows">UI 用 LayoutService 枚举窗口（每次重排前重新取）。</param>
     /// <param name="getArea">UI 给出工作区可用区域（含画边框的边距）。</param>
     /// <param name="getGap">UI 给出当前窗口间隙（来自设置，与一次性布局共用）。</param>
+    /// <param name="getColumnsLimit">
+    /// UI 给出「左右并排」每行列数（3 / 4，来自设置）；不传按 0（不设上限）。
+    /// </param>
     /// <param name="postToUi">把拖拽钩子线程的回调送回 UI 线程；不传就直接执行。</param>
     public ZoneSession(
         Func<IReadOnlyList<WindowInfo>> collectWindows,
         Func<IntPtr, WindowRect> getArea,
         Func<int> getGap,
+        Func<int>? getColumnsLimit = null,
         Action<Action>? postToUi = null)
     {
         _collectWindows = collectWindows;
         _getArea = getArea;
         _getGap = getGap;
+        _getColumnsLimit = getColumnsLimit ?? (() => 0);
         _postToUi = postToUi;
     }
 
@@ -80,6 +89,8 @@ public sealed class ZoneSession : IDisposable
     /// <summary>进入工作区，或按新布局重建（窗口句柄集合按传入的窗口重置）。</summary>
     public void Enter(LayoutKind kind, IReadOnlyList<WindowInfo> windows, IntPtr monitor)
     {
+        _sessionGeneration++;
+
         var workspace = CreateWorkspace(kind, windows, _getArea(monitor), _getGap());
         workspace.FitToMinimumSizes();
 
@@ -109,6 +120,8 @@ public sealed class ZoneSession : IDisposable
 
     private void Close(bool notifyStatus)
     {
+        _sessionGeneration++;
+
         StopWatch();
         RestoreBorders();
         _dragHook?.Hide();
@@ -270,6 +283,9 @@ public sealed class ZoneSession : IDisposable
         // 合并：把标志清掉再干活（和原实现「先入队、回调里清标志」一致）
         _syncQueued = false;
 
+        // 对话框可能挂很久；期间用户可能退出/切换布局，返回后要能认出“这是上一代会话”
+        var generation = _sessionGeneration;
+
         try
         {
             if (Workspace == null || (IsInteractionBusy?.Invoke() ?? false))
@@ -305,6 +321,11 @@ public sealed class ZoneSession : IDisposable
 
             while (true)
             {
+                if (generation != _sessionGeneration || Workspace == null)
+                {
+                    return;
+                }
+
                 var workspace = CreateWorkspace(Kind, candidates, area, gap);
                 workspace.FitToMinimumSizes();
                 if (ZoneFits(workspace))
@@ -321,16 +342,31 @@ public sealed class ZoneSession : IDisposable
                     return;
                 }
 
+                // 关窗 / 最小化触发时没有新窗口：不要走“最小化几个窗口腾空间”的询问，
+                // 也不要把别的窗口最小化；保持原布局并说明。
+                if (newcomers.Count == 0)
+                {
+                    StatusRequested?.Invoke(
+                        $"分区模式（{LayoutNames.Display(Kind)}）：窗口已离开，" +
+                        "剩余窗口最小尺寸放不下，保持原布局", ZoneStatusLevel.Warn);
+                    return;
+                }
+
                 // 放不下：从 Z 序最底层开始找「最小化几个才能排下」（新窗口永远保留）
                 var removable = candidates.AsEnumerable().Reverse()
                     .Where(w => !newcomers.Any(n => n.Handle == w.Handle))
                     .ToList();
 
                 List<WindowInfo>? victims = null;
-                for (var k = 1; k <= removable.Count; k++)
+                for (var k = 1; k < removable.Count; k++)
                 {
                     var drop = removable.Take(k).ToList();
                     var subset = candidates.Where(w => !drop.Contains(w)).ToList();
+                    if (subset.Count == 0)
+                    {
+                        break;
+                    }
+
                     var attempt = CreateWorkspace(Kind, subset, area, gap);
                     attempt.FitToMinimumSizes();
                     if (ZoneFits(attempt))
@@ -347,8 +383,20 @@ public sealed class ZoneSession : IDisposable
                     return;
                 }
 
+                if (generation != _sessionGeneration || Workspace == null)
+                {
+                    return;
+                }
+
                 var accepted = OverflowRequested != null &&
                                await OverflowRequested(victims.Count, newcomers);
+
+                // 等待期间用户退出/重新进入：放弃这次加入，不要复活旧工作区
+                if (generation != _sessionGeneration || Workspace == null)
+                {
+                    return;
+                }
+
                 if (!accepted)
                 {
                     StatusRequested?.Invoke(
@@ -378,10 +426,11 @@ public sealed class ZoneSession : IDisposable
             p.Rect.Width >= p.Window.MinWidth && p.Rect.Height >= p.Window.MinHeight);
 
     /// <summary>
-    /// 3 / 4 窗的网格一律走 <see cref="ZoneWorkspace.PlanGrid"/>（左日右口 / 左右两个日），
-    /// 其它布局（主窗在左 / 左右并排 / 上下堆叠）仍按 <see cref="ZoneWorkspace.Create"/>。
+    /// 规划入口：3 / 4 窗的网格走 <see cref="ZoneWorkspace.PlanGrid"/>（左日右口 / 左右两个日），
+    /// 左右并排走 <see cref="ZoneWorkspace.PlanColumns"/>（每行列数 + 舒适宽度换行），
+    /// 其余（主窗在左 / 上下堆叠）仍按 <see cref="ZoneWorkspace.Create"/>。
     /// </summary>
-    private static ZoneWorkspace CreateWorkspace(
+    private ZoneWorkspace CreateWorkspace(
         LayoutKind kind, IReadOnlyList<WindowInfo> windows, WindowRect area, int gap)
     {
         if (kind == LayoutKind.Grid)
@@ -391,6 +440,11 @@ public sealed class ZoneSession : IDisposable
             {
                 return planned;
             }
+        }
+
+        if (kind == LayoutKind.Columns)
+        {
+            return ZoneWorkspace.PlanColumns(windows, area, gap, _getColumnsLimit());
         }
 
         return ZoneWorkspace.Create(kind, windows, area, gap);

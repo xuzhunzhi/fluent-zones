@@ -69,6 +69,205 @@ public sealed class ZoneWorkspace
             1.0 / windows.Count);
     }
 
+    // 舒适尺寸（有效像素）：一次性布局和工作区共用的分配下限，避免切出一排细条。
+    private const double ComfortWidth = 400;
+    private const double ComfortHeight = 320;
+    private const int AbsoluteMinWidth = 120;
+    private const int AbsoluteMinHeight = 90;
+
+    /// <summary>
+    /// 左右并排的多行规划：每行最多 <paramref name="perRowLimit"/> 个（0 = 不设上限），
+    /// 列宽先给够“舒适宽度”、行高先给够“舒适高度”（按 DPI 缩放，不超过区域一半），
+    /// 再把剩余空间平均分。一次性布局与工作区共用这份几何。
+    ///
+    /// 这里总会返回一棵树：舒适下限塞不下时退到声明的最小尺寸、再退到均分，
+    /// 由调用方在 <see cref="FitToMinimumSizes"/> 之后检查是否真的装得下
+    /// （装不下就走最小化/提示，不再保留第二套“自动分行”算法）。
+    /// 1 个窗口铺满。
+    /// </summary>
+    public static ZoneWorkspace PlanColumns(
+        IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, int perRowLimit)
+    {
+        if (windows.Count == 0)
+        {
+            throw new ArgumentException("至少需要一个窗口", nameof(windows));
+        }
+
+        if (windows.Count == 1)
+        {
+            return Create(LayoutKind.Columns, windows, area, gap);
+        }
+
+        var floors = ComfortFloors(area, windows);
+        var perRow = PerRow(windows, area.Width, gap, floors.Width, perRowLimit);
+        var rows = new List<List<WindowInfo>>();
+        for (var i = 0; i < windows.Count; i += perRow)
+        {
+            rows.Add(windows.Skip(i).Take(Math.Min(perRow, windows.Count - i)).ToList());
+        }
+
+        var rowNodes = rows.Select(row => BuildColumnRow(row, area.Width, gap, floors.Width)).ToList();
+        var rowMins = rows.Select(row => row.Max(w => w.MinHeight)).ToList();
+        var rowSizes = Allocate(area.Height, gap, rowMins, floors.Height)
+                       ?? Allocate(area.Height, gap, rowMins, AbsoluteMinHeight);
+        var root = rowSizes != null
+            ? ChainNodes(rowNodes, rowSizes, gap, horizontal: false)
+            : ChainEqual(rowNodes, horizontal: false);
+
+        return new ZoneWorkspace(root, area, gap);
+    }
+
+    /// <summary>每行放几个：舒适宽度算出的容量与设置上限取小。</summary>
+    private static int PerRow(
+        IReadOnlyList<WindowInfo> windows, int areaWidth, int gap, int floorWidth, int perRowLimit)
+    {
+        var capacity = MaxPerCount(windows.Select(w => w.MinWidth).ToList(), areaWidth, gap, floorWidth);
+        var limit = perRowLimit > 0 ? Math.Min(perRowLimit, windows.Count) : windows.Count;
+        return Math.Max(1, Math.Min(limit, capacity));
+    }
+
+    /// <summary>一行里的横向切分：按“声明最小宽 + 舒适宽度”分配，剩余空间平均分。</summary>
+    private static ZoneNode BuildColumnRow(
+        List<WindowInfo> row, int areaWidth, int gap, int floorWidth)
+    {
+        var leaves = row.Select(ZoneNode.Leaf).ToList();
+        if (leaves.Count == 1)
+        {
+            return leaves[0];
+        }
+
+        var mins = row.Select(w => w.MinWidth).ToList();
+        var sizes = Allocate(areaWidth, gap, mins, floorWidth)
+                    ?? Allocate(areaWidth, gap, mins, AbsoluteMinWidth);
+        return sizes != null
+            ? ChainNodes(leaves, sizes, gap, horizontal: true)
+            : ChainEqual(leaves, horizontal: true);
+    }
+
+    /// <summary>舒适下限：400×320 有效像素按 DPI 缩放，且不超过区域一半。</summary>
+    private static (int Width, int Height) ComfortFloors(WindowRect area, IReadOnlyList<WindowInfo> windows)
+    {
+        var dpi = windows.Count == 0 ? 96 : windows.Max(w => w.Dpi);
+        if (dpi < 96)
+        {
+            dpi = 96;
+        }
+
+        var scale = dpi / 96.0;
+        var width = (int)Math.Round(ComfortWidth * scale);
+        width = Math.Min(width, Math.Max(AbsoluteMinWidth, area.Width / 2));
+        var height = (int)Math.Round(ComfortHeight * scale);
+        height = Math.Min(height, Math.Max(AbsoluteMinHeight, area.Height / 2));
+
+        return (Math.Max(width, AbsoluteMinWidth), Math.Max(height, AbsoluteMinHeight));
+    }
+
+    /// <summary>按最小尺寸分配一段长度；放不下返回 null。</summary>
+    private static int[]? Allocate(int total, int gap, IReadOnlyList<int> minimums, int floor)
+    {
+        var count = minimums.Count;
+        if (count == 0)
+        {
+            return Array.Empty<int>();
+        }
+
+        var sizes = new int[count];
+        long required = (long)gap * (count - 1);
+
+        for (var i = 0; i < count; i++)
+        {
+            sizes[i] = Math.Max(minimums[i], floor);
+            required += sizes[i];
+        }
+
+        if (required > total)
+        {
+            return null;
+        }
+
+        var extra = total - (int)required;
+        var share = extra / count;
+        var remainder = extra % count;
+        for (var i = 0; i < count; i++)
+        {
+            sizes[i] += share + (i < remainder ? 1 : 0);
+        }
+
+        return sizes;
+    }
+
+    /// <summary>按顺序切块，每块都要放得下时能切出的最大块数。</summary>
+    private static int MaxPerCount(IReadOnlyList<int> minimums, int total, int gap, int floor)
+    {
+        var count = minimums.Count;
+        for (var per = count; per >= 1; per--)
+        {
+            var fits = true;
+            for (var start = 0; start < count; start += per)
+            {
+                var take = Math.Min(per, count - start);
+                long required = (long)gap * (take - 1);
+                for (var i = 0; i < take; i++)
+                {
+                    required += Math.Max(minimums[start + i], floor);
+                }
+
+                if (required > total)
+                {
+                    fits = false;
+                    break;
+                }
+            }
+
+            if (fits)
+            {
+                return per;
+            }
+        }
+
+        return 1;
+    }
+
+    /// <summary>按像素尺寸构造链式切分：比例反推成 double，Compute 后仍逐像素一致。</summary>
+    private static ZoneNode ChainNodes(
+        IReadOnlyList<ZoneNode> nodes, IReadOnlyList<int> sizes, int gap, bool horizontal, int index = 0)
+    {
+        if (index == nodes.Count - 1)
+        {
+            return nodes[index];
+        }
+
+        var usable = 0;
+        for (var i = index; i < nodes.Count; i++)
+        {
+            usable += sizes[i];
+        }
+
+        usable += gap * (nodes.Count - index - 2);
+        var ratio = usable > 0 ? sizes[index] / (double)usable : 0.5;
+        return ZoneNode.Split(
+            horizontal,
+            nodes[index],
+            ChainNodes(nodes, sizes, gap, horizontal, index + 1),
+            ratio);
+    }
+
+    /// <summary>均分链（舒适下限也塞不下时的兜底，交给 FitToMinimumSizes 尽量修正）。</summary>
+    private static ZoneNode ChainEqual(IReadOnlyList<ZoneNode> nodes, bool horizontal, int index = 0)
+    {
+        if (index == nodes.Count - 1)
+        {
+            return nodes[index];
+        }
+
+        return ZoneNode.Split(
+            horizontal,
+            nodes[index],
+            ChainEqual(nodes, horizontal, index + 1),
+            1.0 / (nodes.Count - index));
+    }
+
+
     private static ZoneNode MainLeft(IReadOnlyList<WindowInfo> windows)
     {
         if (windows.Count == 1)

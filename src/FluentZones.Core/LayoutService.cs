@@ -147,65 +147,21 @@ public sealed class LayoutService
             var limits = movable.ToDictionary(w => w.Handle, w => new SizeLimits(w.MinWidth, w.MinHeight));
             var groups = GroupByMonitor(participants);
             var notes = new List<string>();
-            var plan = BuildPlan(kind, groups, gap, limits, notes, mainSlot);
+            var plan = BuildPlan(kind, groups, gap, limits, notes, options.ColumnsLimit, mainSlot);
             var unfit = new List<WindowInfo>();
 
             if (plan == null)
             {
-                // 网格：先看"把声明需求最大的窗口换到主窗"能不能排下。
-                // 能排下也不擅自换，返回给界面弹窗让用户决定。
-                if (kind == LayoutKind.Grid && mainSlot == IntPtr.Zero && participants.Count > 1)
+                var fallback = ResolvePlanFallback(
+                    kind, groups, participants, movable, gap, options.ColumnsLimit, mainSlot,
+                    limits, unfit, log, out var trimmed);
+                if (fallback != null)
                 {
-                    var candidate = participants
-                        .OrderByDescending(w => RequiredArea(w, limits))
-                        .First();
-
-                    if (BuildPlan(
-                            kind, groups, gap, limits, new List<string>(),
-                            candidate.Handle) != null)
-                    {
-                        log.Add($"  suggest main slot \"{candidate.Title}\" " +
-                                $"min={candidate.MinWidth}x{candidate.MinHeight}");
-                        return LayoutResult.MainSlot(kind, candidate);
-                    }
+                    return fallback;
                 }
 
-                // 前台优先：从 Z 序最底层开始少排几个，放不下的窗口留在原位。
-                // 只剩前台一个窗口时就是把它铺满——不应该再弹"放不下"。
-                var candidates = new List<WindowInfo>(participants);
-                while (candidates.Count > 1)
-                {
-                    unfit.Insert(0, candidates[^1]);
-                    candidates.RemoveAt(candidates.Count - 1);
-
-                    var attempt = BuildPlan(
-                        kind, GroupByMonitor(candidates), gap, limits,
-                        new List<string>(), mainSlot);
-                    if (attempt != null)
-                    {
-                        plan = attempt;
-                        break;
-                    }
-                }
-
-                log.Add($"  plan=null unfit={unfit.Count}");
-
-                if (plan == null)
-                {
-                    var suggestion = kind == LayoutKind.Cascade
-                        ? new List<WindowInfo>()
-                        : FindMinimalMinimize(movable, kind, gap, limits);
-
-                    log.Add($"  suggestion={suggestion.Count}");
-
-                    if (suggestion.Count > 0)
-                    {
-                        return LayoutResult.Choice(kind, suggestion);
-                    }
-
-                    return LayoutResult.Fail(
-                        $"{LayoutNames.Display(kind)}：窗口最小尺寸放不下，可以改用层叠（Ctrl+Alt+1）");
-                }
+                // 返回 null 时一定带回了“少排几个”的计划（否则上面已经返回 Choice/Fail）
+                plan = trimmed!;
             }
 
             // 只在还没有快照时记录：Ctrl+Alt+0 要回到"第一次按布局热键之前"的状态，
@@ -240,7 +196,7 @@ public sealed class LayoutService
                 }
 
                 var retryNotes = new List<string>();
-                var retry = BuildPlan(kind, groups, gap, limits, retryNotes, mainSlot);
+                var retry = BuildPlan(kind, groups, gap, limits, retryNotes, options.ColumnsLimit, mainSlot);
                 if (retry != null && retry.Count > 0)
                 {
                     log.Add("  retry after clamping");
@@ -312,7 +268,7 @@ public sealed class LayoutService
         var gap = Math.Clamp(options.Gap, 0, 200);
         var limits = scoped.ToDictionary(w => w.Handle, w => new SizeLimits(w.MinWidth, w.MinHeight));
         var notes = new List<string>();
-        var plan = BuildPlan(kind, GroupByMonitor(scoped.ToList()), gap, limits, notes);
+        var plan = BuildPlan(kind, GroupByMonitor(scoped.ToList()), gap, limits, notes, options.ColumnsLimit);
         var planned = plan?.ToDictionary(p => p.Window.Handle, p => p.Rect);
 
         var items = new List<PreviewItem>();
@@ -333,7 +289,7 @@ public sealed class LayoutService
         var note = string.Join("；", notes);
         if (plan == null)
         {
-            var suggestion = FindMinimalMinimize(scoped, kind, gap, limits);
+            var suggestion = FindMinimalMinimize(scoped, kind, gap, limits, options.ColumnsLimit);
             note = (note.Length > 0 ? note + "；" : string.Empty) +
                    $"放不下，建议最小化 {suggestion.Count} 个";
         }
@@ -348,7 +304,7 @@ public sealed class LayoutService
     /// </summary>
     internal static (List<WindowRect>? Rects, string Note) PlanRects(
         LayoutKind kind, IReadOnlyList<WindowInfo> windows, WindowRect area, int gap,
-        IntPtr preferredMain = default)
+        int columnsLimit = 0, IntPtr preferredMain = default)
     {
         if (windows.Count == 0)
         {
@@ -364,6 +320,7 @@ public sealed class LayoutService
             gap,
             limits,
             notes,
+            columnsLimit,
             preferredMain);
 
         if (plan == null)
@@ -678,6 +635,7 @@ public sealed class LayoutService
         int gap,
         Dictionary<IntPtr, SizeLimits> limits,
         List<string> notes,
+        int columnsLimit = 0,
         IntPtr preferredMain = default)
     {
         var plan = new List<PlannedWindow>();
@@ -700,7 +658,7 @@ public sealed class LayoutService
             }
             else
             {
-                rects = ZoneLayout(kind, ordered, area, gap, limits, preferredMain, out note);
+                rects = ZoneLayout(kind, ordered, area, gap, limits, columnsLimit, preferredMain, out note);
             }
 
             if (rects == null)
@@ -722,12 +680,104 @@ public sealed class LayoutService
         return plan;
     }
 
+    /// <summary>
+    /// ApplyCore 的“装不下”兜底，抽出来便于无头验证：
+    /// 1) 网格先试“把声明需求最大的窗口换到主窗”；
+    /// 2) 网格按 docs/GRID.md 先问“最小化最久未使用的 N 个后重排”；
+    /// 3) 其它布局沿用“前台优先少排几个、放不下的保持原位”；
+    /// 4) 连一个窗口都排不下时提示改用层叠。
+    /// 成功少排时通过 <paramref name="plan"/> 返回计划并返回 null；
+    /// 需要界面决策时返回对应的 <see cref="LayoutResult"/>。
+    /// </summary>
+    internal static LayoutResult? ResolvePlanFallback(
+        LayoutKind kind,
+        List<WindowGroup> groups,
+        List<WindowInfo> participants,
+        List<WindowInfo> movable,
+        int gap,
+        int columnsLimit,
+        IntPtr mainSlot,
+        Dictionary<IntPtr, SizeLimits> limits,
+        List<WindowInfo> unfit,
+        List<string> log,
+        out List<PlannedWindow>? plan)
+    {
+        plan = null;
+
+        // 网格：先看“把声明需求最大的窗口换到主窗”能不能排下。
+        // 能排下也不擅自换，返回给界面弹窗让用户决定。
+        if (kind == LayoutKind.Grid && mainSlot == IntPtr.Zero && participants.Count > 1)
+        {
+            var candidate = participants
+                .OrderByDescending(w => RequiredArea(w, limits))
+                .First();
+
+            if (BuildPlan(
+                    kind, groups, gap, limits, new List<string>(),
+                    columnsLimit, candidate.Handle) != null)
+            {
+                log.Add($"  suggest main slot \"{candidate.Title}\" " +
+                        $"min={candidate.MinWidth}x{candidate.MinHeight}");
+                return LayoutResult.MainSlot(kind, candidate);
+            }
+        }
+
+        // 网格且多个窗口都放不下：先问“最小化 N 个后重排”（docs/GRID.md），
+        // 不再静默把放不下的窗口留在原位。其它布局保持“前台优先少排几个”的约定。
+        if (kind == LayoutKind.Grid)
+        {
+            var suggestion = FindMinimalMinimize(movable, kind, gap, limits, columnsLimit);
+            if (suggestion.Count > 0)
+            {
+                log.Add($"  suggestion={suggestion.Count}");
+                return LayoutResult.Choice(kind, suggestion);
+            }
+        }
+
+        // 前台优先：从 Z 序最底层开始少排几个，放不下的窗口留在原位。
+        // 只剩前台一个窗口时就是把它铺满——不应该再弹"放不下"。
+        var candidates = new List<WindowInfo>(participants);
+        while (candidates.Count > 1)
+        {
+            unfit.Insert(0, candidates[^1]);
+            candidates.RemoveAt(candidates.Count - 1);
+
+            var attempt = BuildPlan(
+                kind, GroupByMonitor(candidates), gap, limits,
+                new List<string>(), columnsLimit, mainSlot);
+            if (attempt != null)
+            {
+                plan = attempt;
+                break;
+            }
+        }
+
+        log.Add($"  plan=null unfit={unfit.Count}");
+
+        if (plan != null)
+        {
+            return null;
+        }
+
+        var fallbackSuggestion = kind == LayoutKind.Cascade
+            ? new List<WindowInfo>()
+            : FindMinimalMinimize(movable, kind, gap, limits, columnsLimit);
+
+        log.Add($"  suggestion={fallbackSuggestion.Count}");
+
+        return fallbackSuggestion.Count > 0
+            ? LayoutResult.Choice(kind, fallbackSuggestion)
+            : LayoutResult.Fail(
+                $"{LayoutNames.Display(kind)}：窗口最小尺寸放不下，可以改用层叠（Ctrl+Alt+1）");
+    }
+
     /// <summary>找出最少要最小化几个（从 Z 序最底层开始）才能排得下。</summary>
     private static List<WindowInfo> FindMinimalMinimize(
         IReadOnlyList<WindowInfo> scoped,
         LayoutKind kind,
         int gap,
-        Dictionary<IntPtr, SizeLimits> limits)
+        Dictionary<IntPtr, SizeLimits> limits,
+        int columnsLimit = 0)
     {
         for (var count = 1; count < scoped.Count; count++)
         {
@@ -739,7 +789,7 @@ public sealed class LayoutService
             }
 
             var notes = new List<string>();
-            if (BuildPlan(kind, GroupByMonitor(rest), gap, limits, notes) != null)
+            if (BuildPlan(kind, GroupByMonitor(rest), gap, limits, notes, columnsLimit) != null)
             {
                 return victims;
             }
@@ -782,20 +832,18 @@ public sealed class LayoutService
     }
 
     /// <summary>
-    /// 一次性布局的矩形来源：与工作区共用 <see cref="ZoneWorkspace"/>（切分树 + 最小尺寸拟合），
-    /// 不再保留“按最小尺寸均分 / 自动分行分列”的第二套算法。任一格小于窗口声明的最小尺寸
-    /// 就返回 null，交给外层原有的“最小化 / 换主窗 / 层叠”提示逻辑。
+    /// 一次性布局的矩形来源：与工作区共用 <see cref="ZoneWorkspace"/>（切分树 + 最小尺寸拟合）。
+    /// 左右并排走 <see cref="ZoneWorkspace.PlanColumns"/>（每行列数 + 舒适宽度换行），
+    /// 网格走 <see cref="ZoneWorkspace.PlanGrid"/>，其余走 <see cref="ZoneWorkspace.Create"/>。
+    /// 任一格（包括只剩一个窗口时）小于窗口声明的最小尺寸就返回 null，交给外层
+    /// “最小化 / 换主窗 / 层叠”提示逻辑。
     /// <paramref name="preferredMain"/> 只用于网格的“主窗槽位”，其它布局用前台窗口当主窗。
     /// </summary>
     private static List<WindowRect>? ZoneLayout(
         LayoutKind kind, List<WindowInfo> windows, WindowRect area, int gap,
-        Dictionary<IntPtr, SizeLimits> limits, IntPtr preferredMain, out string? note)
+        Dictionary<IntPtr, SizeLimits> limits, int columnsLimit, IntPtr preferredMain, out string? note)
     {
         note = null;
-        if (windows.Count == 1)
-        {
-            return new List<WindowRect> { area };
-        }
 
         // FitToMinimumSizes 读的是 WindowInfo 上的最小尺寸；重试时 limits 可能被系统实际撑大，
         // 这里用快照副本把两者合并，保证一次性布局和工作区按同一份最小尺寸拟合。
@@ -812,9 +860,13 @@ public sealed class LayoutService
             note = $"「{pinned.Title}」已放到主窗";
         }
 
-        var workspace = kind == LayoutKind.Grid
-            ? ZoneWorkspace.PlanGrid(ordered, area, gap) ?? ZoneWorkspace.Create(LayoutKind.Grid, ordered, area, gap)
-            : ZoneWorkspace.Create(kind, ordered, area, gap);
+        var workspace = kind switch
+        {
+            LayoutKind.Grid => ZoneWorkspace.PlanGrid(ordered, area, gap)
+                               ?? ZoneWorkspace.Create(LayoutKind.Grid, ordered, area, gap),
+            LayoutKind.Columns => ZoneWorkspace.PlanColumns(ordered, area, gap, columnsLimit),
+            _ => ZoneWorkspace.Create(kind, ordered, area, gap),
+        };
         workspace.FitToMinimumSizes();
 
         var byHandle = workspace.Compute().ToDictionary(p => p.Window.Handle, p => p.Rect);
@@ -1036,13 +1088,14 @@ public sealed class LayoutService
 
     // ---------------- 内部类型 ----------------
 
-    private readonly record struct SizeLimits(int Width, int Height);
+    // 供无头验证（InternalsVisibleTo wltest）构造规划输入，不暴露给 UI。
+    internal readonly record struct SizeLimits(int Width, int Height);
 
     private readonly record struct WindowMargins(int Left, int Top, int Right, int Bottom);
 
-    private sealed record PlannedWindow(WindowInfo Window, WindowRect Rect);
+    internal sealed record PlannedWindow(WindowInfo Window, WindowRect Rect);
 
-    private sealed record WindowGroup(IntPtr Monitor, List<WindowInfo> Windows, WindowRect Area);
+    internal sealed record WindowGroup(IntPtr Monitor, List<WindowInfo> Windows, WindowRect Area);
 
     private sealed class SnapshotEntry
     {

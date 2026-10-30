@@ -64,11 +64,12 @@ public sealed partial class MainWindow : Window
 
         _settings = SettingsStore.Load();
 
-        // 工作区状态机在 Core：这里只注入「枚举窗口 / 量可用区域 / 取间隙 / 回 UI 线程」四件胶水
+        // 工作区状态机在 Core：这里只注入「枚举窗口 / 量可用区域 / 取间隙 / 每行列数 / 回 UI 线程」
         _zones = new ZoneSession(
             collectWindows: () => _layouts.GetWindows(CurrentOptions().Scope),
             getArea: ZoneArea,
             getGap: () => CurrentOptions().Gap,
+            getColumnsLimit: () => _settings.ColumnsLimit,
             postToUi: PostToUi);
         _zones.PlaceRequested += placements =>
             _layouts.PlaceRects(placements.Select(p => (p.Window.Handle, p.Rect)));
