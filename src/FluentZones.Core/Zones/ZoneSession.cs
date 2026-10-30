@@ -358,7 +358,7 @@ public sealed class ZoneSession : IDisposable
                     .ToList();
 
                 List<WindowInfo>? victims = null;
-                for (var k = 1; k < removable.Count; k++)
+                for (var k = 1; k <= removable.Count; k++)
                 {
                     var drop = removable.Take(k).ToList();
                     var subset = candidates.Where(w => !drop.Contains(w)).ToList();

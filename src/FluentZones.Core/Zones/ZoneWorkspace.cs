@@ -396,28 +396,18 @@ public sealed class ZoneWorkspace
         var orders = Permutations(new[] { 0, 1, 2 })
             .OrderByDescending(p => p.SequenceEqual(natural));
 
-        var usableW = area.Width - gap;
-        var leftW = (int)Math.Round(usableW * 0.62);
-        var rightW = usableW - leftW;
-        var usableH = area.Height - gap;
-        var half = (int)Math.Floor(usableH * 0.5);
-
+        // 逐个排列真排一遍：FitToMinimumSizes 会移动分隔线，所以不能用 62/38 + 50/50 的固定预算预判。
         foreach (var order in orders)
         {
-            var lt = windows[order[0]];
-            var lb = windows[order[1]];
-            var right = windows[order[2]];
-
-            if (leftW < lt.MinWidth || leftW < lb.MinWidth || rightW < right.MinWidth ||
-                half < lt.MinHeight || half < lb.MinHeight || usableH < right.MinHeight)
+            var workspace = CreateLeftDay(
+                new[] { windows[order[0]], windows[order[1]], windows[order[2]] }, area, gap, 0.5);
+            if (FitsAfterMinimumFit(workspace))
             {
-                continue;
+                return workspace;
             }
-
-            return CreateLeftDay(new[] { lt, lb, right }, area, gap, 0.5);
         }
 
-        // 没有能全放下的分配时也保持「左日右口」的形状，按自然顺序铺
+        // 没有能全放下的分配时也保持「左日右口」的形状，按自然顺序铺；调用方用同一份最小尺寸校验判断放不下
         return CreateLeftDay(new[] { windows[0], windows[1], windows[2] }, area, gap, 0.5);
     }
 
@@ -427,43 +417,33 @@ public sealed class ZoneWorkspace
         var orders = Permutations(new[] { 0, 1, 2, 3 })
             .OrderByDescending(p => p.SequenceEqual(natural));
 
-        var usableW = area.Width - gap;
-        var leftW = (int)Math.Round(usableW * 0.62);
-        var rightW = usableW - leftW;
-        var usableH = area.Height - gap;
-        var maxBottom = (int)Math.Floor(usableH * 0.5);
-
+        // 全部 24 个排列都实际拟合一次，避免固定 62/38、50/50 预算造成的假“放不下”。
         foreach (var order in orders)
         {
-            var lt = windows[order[0]];
-            var rt = windows[order[1]];
-            var lb = windows[order[2]];
-            var rb = windows[order[3]];
-
-            if (leftW < lt.MinWidth || leftW < lb.MinWidth ||
-                rightW < rt.MinWidth || rightW < rb.MinWidth)
+            var workspace = CreateTwoRows(
+                new[] { windows[order[0]], windows[order[1]], windows[order[2]], windows[order[3]] },
+                area, gap, MainRatio);
+            if (FitsAfterMinimumFit(workspace))
             {
-                continue;
+                return workspace;
             }
-
-            // 左下可以长高（≤50%），把副主窗的最小高度塞进去
-            var bottom = Math.Max((int)Math.Round(usableH * 0.38), lb.MinHeight);
-            bottom = Math.Min(bottom, maxBottom);
-            var top = usableH - bottom;
-            var half = usableH / 2;
-
-            if (top < lt.MinHeight || bottom < lb.MinHeight ||
-                half < rt.MinHeight || half < rb.MinHeight)
-            {
-                continue;
-            }
-
-            return CreateTwoRows(new[] { lt, rt, lb, rb }, area, gap, (double)top / usableH);
         }
 
-        // 没有能全放下的分配时也保持「左右两个日」的形状，按自然顺序铺
+        // 没有能全放下的分配时也保持「左右两个日」的形状，按自然顺序铺；调用方用同一份最小尺寸校验判断放不下
         return CreateTwoRows(
-            new[] { windows[0], windows[2], windows[1], windows[3] }, area, gap, 0.62);
+            new[] { windows[0], windows[2], windows[1], windows[3] }, area, gap, MainRatio);
+    }
+
+    /// <summary>
+    /// 排列的可行性：先把分隔线推到满足最小尺寸（FitToMinimumSizes），再确认每一格都不小于
+    /// 窗口声明的最小尺寸。与调用方（LayoutService / ZoneSession）的检查用同一个下限。
+    /// </summary>
+    private static bool FitsAfterMinimumFit(ZoneWorkspace workspace)
+    {
+        workspace.FitToMinimumSizes();
+        return workspace.Compute().All(p =>
+            p.Rect.Width >= Math.Max(p.Window.MinWidth, AbsoluteMinWidth) &&
+            p.Rect.Height >= Math.Max(p.Window.MinHeight, AbsoluteMinHeight));
     }
 
     private static List<int[]> Permutations(int[] items)

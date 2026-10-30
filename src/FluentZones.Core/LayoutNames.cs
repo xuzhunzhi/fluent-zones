@@ -16,7 +16,7 @@ public static class LayoutNames
     {
         LayoutKind.Cascade => "按 Z 序错开，露出每个窗口的标题栏",
         LayoutKind.Columns => "按各窗口最小宽度分配，放不下自动分行",
-        LayoutKind.Rows => "按各窗口最小高度分配，放不下自动分列",
+        LayoutKind.Rows => "单列纵向堆叠，按各窗口最小高度分配",
         LayoutKind.Grid => "自动挑一个放得下最小尺寸的宫格",
         LayoutKind.MainLeft => "前台窗口在左，其余按最小高度在右侧堆叠",
         _ => string.Empty,
