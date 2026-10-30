@@ -40,5 +40,12 @@ public sealed class ZoneNode
 /// <summary>一个窗口最终落在哪个格子里。</summary>
 public sealed record ZonePlacement(WindowInfo Window, WindowRect Rect);
 
+/// <summary>
+/// 网格规划结果。<see cref="MainSwapRequested"/> 非 null 表示“自然主窗”排不下：
+/// 给出的 <see cref="Workspace"/> 是把该窗口换到主窗后的可行解，
+/// 调用方必须先征得用户同意，否则不能应用（按放不下处理）。
+/// </summary>
+public readonly record struct ZoneGridPlan(ZoneWorkspace Workspace, WindowInfo? MainSwapRequested);
+
 /// <summary>一条可拖拽的分隔线。</summary>
 public sealed record ZoneDivider(ZoneNode Node, bool Horizontal, WindowRect Region);

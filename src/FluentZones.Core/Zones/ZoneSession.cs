@@ -83,16 +83,61 @@ public sealed class ZoneSession : IDisposable
     /// </summary>
     public Func<int, IReadOnlyList<WindowInfo>, Task<bool>>? OverflowRequested { get; set; }
 
+    /// <summary>
+    /// 网格只有把该窗口换到主窗才排得下：UI 弹窗请求许可。
+    /// 返回 true 才允许换主窗；false / 未设置 = 保持自然主窗，按放不下处理。
+    /// </summary>
+    public Func<WindowInfo, Task<bool>>? MainSwapRequested { get; set; }
+
     /// <summary>UI 正在弹对话框：此时不要重排，避免和对话流程打架。</summary>
     public Func<bool>? IsInteractionBusy { get; set; }
 
-    /// <summary>进入工作区，或按新布局重建（窗口句柄集合按传入的窗口重置）。</summary>
-    public void Enter(LayoutKind kind, IReadOnlyList<WindowInfo> windows, IntPtr monitor)
+    /// <summary>
+    /// 进入工作区，或按新布局重建（窗口句柄集合按传入的窗口重置）。
+    /// 返回 false = 最小尺寸放不下或换主窗未获允许，没有应用这个布局（状态栏已说明原因）。
+    /// </summary>
+    public async Task<bool> EnterAsync(LayoutKind kind, IReadOnlyList<WindowInfo> windows, IntPtr monitor)
     {
         _sessionGeneration++;
+        var generation = _sessionGeneration;
 
-        var workspace = CreateWorkspace(kind, windows, _getArea(monitor), _getGap());
+        var (workspace, swap) = CreateWorkspace(
+            kind, windows, _getArea(monitor), _getGap(), allowMainSwap: true);
         workspace.FitToMinimumSizes();
+
+        if (swap != null)
+        {
+            var approved = MainSwapRequested != null && await MainSwapRequested(swap);
+            if (generation != _sessionGeneration)
+            {
+                return false;
+            }
+
+            if (!approved)
+            {
+                StatusRequested?.Invoke(
+                    IsActive
+                        ? $"分区模式（{LayoutNames.Display(kind)}）：需要把「{swap.Title}」换到主窗才能排下，" +
+                          "未获允许，保持原布局"
+                        : $"分区模式（{LayoutNames.Display(kind)}）：需要把「{swap.Title}」换到主窗才能排下，" +
+                          "未获允许，无法进入",
+                    ZoneStatusLevel.Warn);
+                return false;
+            }
+
+            workspace.FitToMinimumSizes();
+        }
+
+        if (!ZoneFits(workspace))
+        {
+            // 与 SyncAsync 的“放不下”处理一致：不静默应用，也不把窗口压到最小尺寸以下
+            StatusRequested?.Invoke(
+                IsActive
+                    ? $"分区模式（{LayoutNames.Display(kind)}）：窗口最小尺寸放不下，保持原布局"
+                    : $"分区模式（{LayoutNames.Display(kind)}）：窗口最小尺寸放不下，无法进入",
+                ZoneStatusLevel.Warn);
+            return false;
+        }
 
         Kind = kind;
         Monitor = monitor;
@@ -106,6 +151,7 @@ public sealed class ZoneSession : IDisposable
         EnsureDragHook().Show(workspace);
         Apply(workspace);
         StartWatch();
+        return true;
     }
 
     /// <summary>退出工作区：恢复窗口样式、摘掉拖拽钩子与窗口监听，窗口保持当前尺寸。</summary>
@@ -318,6 +364,7 @@ public sealed class ZoneSession : IDisposable
             var gap = _getGap();
             var area = _getArea(Monitor);
             var candidates = new List<WindowInfo>(windows);
+            var allowMainSwap = true;
 
             while (true)
             {
@@ -326,8 +373,42 @@ public sealed class ZoneSession : IDisposable
                     return;
                 }
 
-                var workspace = CreateWorkspace(Kind, candidates, area, gap);
+                var (workspace, swap) = CreateWorkspace(Kind, candidates, area, gap, allowMainSwap);
                 workspace.FitToMinimumSizes();
+
+                if (swap != null)
+                {
+                    // 网格只有换主窗才排得下：先请用户许可；不同意就按“放不下”继续（不再问）
+                    if (MainSwapRequested == null)
+                    {
+                        allowMainSwap = false;
+                        continue;
+                    }
+
+                    var approved = await MainSwapRequested(swap);
+                    if (generation != _sessionGeneration || Workspace == null)
+                    {
+                        return;
+                    }
+
+                    if (approved)
+                    {
+                        Workspace = workspace;
+                        _dragHook?.Refresh(workspace);
+                        Apply(workspace);
+
+                        var swapChange = newcomers.Count > 0
+                            ? $"新窗口已加入（{candidates.Count} 个，已换主窗）"
+                            : $"窗口已离开（{candidates.Count} 个，已换主窗）";
+                        StatusRequested?.Invoke(
+                            $"分区模式（{LayoutNames.Display(Kind)}）：{swapChange}", ZoneStatusLevel.Info);
+                        return;
+                    }
+
+                    allowMainSwap = false;
+                    continue;
+                }
+
                 if (ZoneFits(workspace))
                 {
                     Workspace = workspace;
@@ -367,7 +448,7 @@ public sealed class ZoneSession : IDisposable
                         break;
                     }
 
-                    var attempt = CreateWorkspace(Kind, subset, area, gap);
+                    var attempt = CreateWorkspace(Kind, subset, area, gap, allowMainSwap: false).Workspace;
                     attempt.FitToMinimumSizes();
                     if (ZoneFits(attempt))
                     {
@@ -426,27 +507,30 @@ public sealed class ZoneSession : IDisposable
             p.Rect.Width >= p.Window.MinWidth && p.Rect.Height >= p.Window.MinHeight);
 
     /// <summary>
-    /// 规划入口：3 / 4 窗的网格走 <see cref="ZoneWorkspace.PlanGrid"/>（左日右口 / 左右两个日），
+    /// 规划入口：网格走 <see cref="ZoneWorkspace.PlanGrid"/>（3/4 窗左日右口 / 左右两个日，
+    /// 5/6 窗逐排列拟合；<paramref name="allowMainSwap"/> 为 false 时只接受自然主窗的解），
     /// 左右并排走 <see cref="ZoneWorkspace.PlanColumns"/>（每行列数 + 舒适宽度换行），
     /// 其余（主窗在左 / 上下堆叠）仍按 <see cref="ZoneWorkspace.Create"/>。
+    /// 返回值第二个元素非 null 表示“需要用户同意换主窗”，此时不能应用第一个元素。
     /// </summary>
-    private ZoneWorkspace CreateWorkspace(
-        LayoutKind kind, IReadOnlyList<WindowInfo> windows, WindowRect area, int gap)
+    private (ZoneWorkspace Workspace, WindowInfo? MainSwapRequested) CreateWorkspace(
+        LayoutKind kind, IReadOnlyList<WindowInfo> windows, WindowRect area, int gap,
+        bool allowMainSwap = true)
     {
         if (kind == LayoutKind.Grid)
         {
-            var planned = ZoneWorkspace.PlanGrid(windows, area, gap);
+            var planned = ZoneWorkspace.PlanGrid(windows, area, gap, keepMain: !allowMainSwap);
             if (planned != null)
             {
-                return planned;
+                return (planned.Value.Workspace, planned.Value.MainSwapRequested);
             }
         }
 
         if (kind == LayoutKind.Columns)
         {
-            return ZoneWorkspace.PlanColumns(windows, area, gap, _getColumnsLimit());
+            return (ZoneWorkspace.PlanColumns(windows, area, gap, _getColumnsLimit()), null);
         }
 
-        return ZoneWorkspace.Create(kind, windows, area, gap);
+        return (ZoneWorkspace.Create(kind, windows, area, gap), null);
     }
 }

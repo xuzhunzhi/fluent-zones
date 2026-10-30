@@ -64,10 +64,14 @@ public sealed record LayoutResult(
     bool NeedsChoice = false,
     IReadOnlyList<WindowInfo>? SuggestedMinimize = null,
     IReadOnlyList<WindowInfo>? Unmovable = null,
-    WindowInfo? SuggestedMain = null)
+    WindowInfo? SuggestedMain = null,
+    bool NeedsConfirmMain = false)
 {
+    /// <summary>有可行解，但需要用户同意把 <see cref="SuggestedMain"/> 换到主窗。</summary>
+    public bool NeedsMainSwap => NeedsConfirmMain && SuggestedMain != null;
+
     /// <summary>网格放不下，但把 <see cref="SuggestedMain"/> 换到主窗就能排下，等用户确认。</summary>
-    public bool NeedsMainSlot => SuggestedMain != null;
+    public bool NeedsMainSlot => SuggestedMain != null && !NeedsConfirmMain;
 
     public static LayoutResult Fail(string message) => new(false, message, 0);
 
@@ -78,4 +82,9 @@ public sealed record LayoutResult(
     /// <summary>放不下，但把这个窗口换到主窗就能排下。</summary>
     public static LayoutResult MainSlot(LayoutKind kind, WindowInfo window) =>
         new(false, $"「{window.Title}」声明的最小尺寸较大，可以放到主窗", 0, kind, SuggestedMain: window);
+
+    /// <summary>网格有可行解，但必须先得到用户同意把该窗口换到主窗（不能不问就换）。</summary>
+    public static LayoutResult ConfirmMain(LayoutKind kind, WindowInfo window) =>
+        new(false, $"网格排不下，需要把「{window.Title}」换到主窗才能排下", 0, kind,
+            SuggestedMain: window, NeedsConfirmMain: true);
 }

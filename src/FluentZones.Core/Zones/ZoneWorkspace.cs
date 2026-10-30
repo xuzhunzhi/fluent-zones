@@ -372,66 +372,180 @@ public sealed class ZoneWorkspace
     }
 
     /// <summary>
-    /// 网格平铺的槽位规划：3 窗左日右口、4 窗左右两个日；枚举窗口分配并按最小尺寸选位。
-    /// 一次性布局与工作区共用同一份规划（工作区只是把结果留下来）。
+    /// 网格平铺的槽位规划：3 窗左日右口、4 窗左右两个日、5 / 6 窗沿用「主窗 + 右侧列 + 底部行」马赛克。
+    /// 先找“自然主窗（第一个窗口）当主窗”的排列；只有都不行时才找换主窗的排列，并通过
+    /// <see cref="ZoneGridPlan.MainSwapRequested"/> 告诉调用方“必须先把该窗口换到主窗，且需用户同意”。
+    /// 一次性布局与工作区共用同一份规划。
     /// </summary>
-    public static ZoneWorkspace? PlanGrid(IReadOnlyList<WindowInfo> windows, WindowRect area, int gap)
+    /// <param name="keepMain">
+    /// true = 只枚举第一个窗口留在主窗的排列（用户已同意换主窗后的重排，或明确不允许换主窗）。
+    /// </param>
+    public static ZoneGridPlan? PlanGrid(
+        IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, bool keepMain = false)
     {
         if (windows.Count == 3)
         {
-            return PlanLeftDay(windows, area, gap);
+            return PlanLeftDay(windows, area, gap, keepMain);
         }
 
         if (windows.Count == 4)
         {
-            return PlanTwoRows(windows, area, gap);
+            return PlanTwoRows(windows, area, gap, keepMain);
+        }
+
+        if (windows.Count is 5 or 6)
+        {
+            return PlanMosaic(windows, area, gap, keepMain);
         }
 
         return null;
     }
 
-    private static ZoneWorkspace PlanLeftDay(IReadOnlyList<WindowInfo> windows, WindowRect area, int gap)
+    private static ZoneGridPlan PlanLeftDay(
+        IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, bool keepMain)
     {
         var natural = new[] { 0, 1, 2 };
-        var orders = Permutations(new[] { 0, 1, 2 })
-            .OrderByDescending(p => p.SequenceEqual(natural));
 
-        // 逐个排列真排一遍：FitToMinimumSizes 会移动分隔线，所以不能用 62/38 + 50/50 的固定预算预判。
-        foreach (var order in orders)
+        // 先穷举“自然主窗还在主窗”的排列：这档不需要问用户
+        foreach (var order in MainPermutations(natural, keepMain: true))
         {
-            var workspace = CreateLeftDay(
-                new[] { windows[order[0]], windows[order[1]], windows[order[2]] }, area, gap, 0.5);
+            var workspace = CreateLeftDay(OrderWindows(windows, order), area, gap, 0.5);
             if (FitsAfterMinimumFit(workspace))
             {
-                return workspace;
+                return new ZoneGridPlan(workspace, null);
             }
         }
 
-        // 没有能全放下的分配时也保持「左日右口」的形状，按自然顺序铺；调用方用同一份最小尺寸校验判断放不下
-        return CreateLeftDay(new[] { windows[0], windows[1], windows[2] }, area, gap, 0.5);
+        if (keepMain)
+        {
+            // 没有能全放下的分配时也保持「左日右口」的形状，按自然顺序铺；调用方判断放不下
+            return new ZoneGridPlan(CreateLeftDay(OrderWindows(windows, natural), area, gap, 0.5), null);
+        }
+
+        // 再找“换主窗”的排列；找到也必须交给用户确认，不能直接应用
+        foreach (var order in MainPermutations(natural, keepMain: false))
+        {
+            if (order[0] == natural[0])
+            {
+                continue;
+            }
+
+            var workspace = CreateLeftDay(OrderWindows(windows, order), area, gap, 0.5);
+            if (FitsAfterMinimumFit(workspace))
+            {
+                return new ZoneGridPlan(workspace, windows[order[0]]);
+            }
+        }
+
+        return new ZoneGridPlan(CreateLeftDay(OrderWindows(windows, natural), area, gap, 0.5), null);
     }
 
-    private static ZoneWorkspace PlanTwoRows(IReadOnlyList<WindowInfo> windows, WindowRect area, int gap)
+    private static ZoneGridPlan PlanTwoRows(
+        IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, bool keepMain)
     {
         var natural = new[] { 0, 2, 1, 3 };
-        var orders = Permutations(new[] { 0, 1, 2, 3 })
-            .OrderByDescending(p => p.SequenceEqual(natural));
 
-        // 全部 24 个排列都实际拟合一次，避免固定 62/38、50/50 预算造成的假“放不下”。
-        foreach (var order in orders)
+        foreach (var order in MainPermutations(natural, keepMain: true))
         {
-            var workspace = CreateTwoRows(
-                new[] { windows[order[0]], windows[order[1]], windows[order[2]], windows[order[3]] },
-                area, gap, MainRatio);
+            var workspace = CreateTwoRows(OrderWindows(windows, order), area, gap, MainRatio);
             if (FitsAfterMinimumFit(workspace))
             {
-                return workspace;
+                return new ZoneGridPlan(workspace, null);
             }
         }
 
-        // 没有能全放下的分配时也保持「左右两个日」的形状，按自然顺序铺；调用方用同一份最小尺寸校验判断放不下
-        return CreateTwoRows(
-            new[] { windows[0], windows[2], windows[1], windows[3] }, area, gap, MainRatio);
+        if (keepMain)
+        {
+            return new ZoneGridPlan(CreateTwoRows(OrderWindows(windows, natural), area, gap, MainRatio), null);
+        }
+
+        foreach (var order in MainPermutations(natural, keepMain: false))
+        {
+            if (order[0] == natural[0])
+            {
+                continue;
+            }
+
+            var workspace = CreateTwoRows(OrderWindows(windows, order), area, gap, MainRatio);
+            if (FitsAfterMinimumFit(workspace))
+            {
+                return new ZoneGridPlan(workspace, windows[order[0]]);
+            }
+        }
+
+        return new ZoneGridPlan(
+            CreateTwoRows(OrderWindows(windows, natural), area, gap, MainRatio), null);
+    }
+
+    /// <summary>
+    /// 5 / 6 窗网格：沿用「主窗 + 右侧列 + 底部行」拓扑（<see cref="Grid"/>），
+    /// 把哪个窗口放进哪个格子交给逐排列拟合搜索。120 / 720 个排列，成本可忽略。
+    /// </summary>
+    private static ZoneGridPlan PlanMosaic(
+        IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, bool keepMain)
+    {
+        var natural = Enumerable.Range(0, windows.Count).ToArray();
+
+        foreach (var order in MainPermutations(natural, keepMain: true))
+        {
+            var workspace = new ZoneWorkspace(Grid(OrderWindows(windows, order)), area, gap);
+            if (FitsAfterMinimumFit(workspace))
+            {
+                return new ZoneGridPlan(workspace, null);
+            }
+        }
+
+        if (keepMain)
+        {
+            return new ZoneGridPlan(Create(LayoutKind.Grid, windows, area, gap), null);
+        }
+
+        foreach (var order in MainPermutations(natural, keepMain: false))
+        {
+            if (order[0] == natural[0])
+            {
+                continue;
+            }
+
+            var workspace = new ZoneWorkspace(Grid(OrderWindows(windows, order)), area, gap);
+            if (FitsAfterMinimumFit(workspace))
+            {
+                return new ZoneGridPlan(workspace, windows[order[0]]);
+            }
+        }
+
+        return new ZoneGridPlan(Create(LayoutKind.Grid, windows, area, gap), null);
+    }
+
+    private static WindowInfo[] OrderWindows(IReadOnlyList<WindowInfo> windows, IReadOnlyList<int> order)
+    {
+        var ordered = new WindowInfo[order.Count];
+        for (var i = 0; i < order.Count; i++)
+        {
+            ordered[i] = windows[order[i]];
+        }
+
+        return ordered;
+    }
+
+    /// <summary>
+    /// 枚举窗口分配：<paramref name="natural"/> 是默认顺序（第一个窗口当主窗，其余按自然顺序填格）；
+    /// <paramref name="keepMain"/> 时只枚举第一个窗口固定在主窗的排列。
+    /// </summary>
+    private static List<int[]> MainPermutations(int[] natural, bool keepMain)
+    {
+        if (!keepMain)
+        {
+            return Permutations(natural)
+                .OrderByDescending(order => order.SequenceEqual(natural))
+                .ToList();
+        }
+
+        var rest = natural.Skip(1).ToArray();
+        return Permutations(rest)
+            .OrderByDescending(order => order.SequenceEqual(rest))
+            .Select(order => new[] { natural[0] }.Concat(order).ToArray())
+            .ToList();
     }
 
     /// <summary>

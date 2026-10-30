@@ -43,17 +43,18 @@ public sealed class LayoutService
         LayoutOptions options,
         IReadOnlyCollection<IntPtr>? restrictTo = null,
         int minimizeOldest = 0,
-        IntPtr mainSlot = default)
+        IntPtr mainSlot = default,
+        bool allowMainSwap = true)
     {
         var log = new List<string>
         {
-            $"=== {DateTime.Now:yyyy-MM-dd HH:mm:ss} kind={kind} gap={options.Gap} scope={options.Scope} minimize={minimizeOldest}",
+            $"=== {DateTime.Now:yyyy-MM-dd HH:mm:ss} kind={kind} gap={options.Gap} scope={options.Scope} minimize={minimizeOldest} allowMainSwap={allowMainSwap}",
             "foreground: " + DescribeWindow(NativeMethods.GetForegroundWindow()),
         };
 
         try
         {
-            return ApplyCore(kind, options, restrictTo, minimizeOldest, mainSlot, log);
+            return ApplyCore(kind, options, restrictTo, minimizeOldest, mainSlot, allowMainSwap, log);
         }
         finally
         {
@@ -67,6 +68,7 @@ public sealed class LayoutService
         IReadOnlyCollection<IntPtr>? restrictTo,
         int minimizeOldest,
         IntPtr mainSlot,
+        bool allowMainSwap,
         List<string> log)
     {
         lock (_gate)
@@ -147,22 +149,16 @@ public sealed class LayoutService
             var limits = movable.ToDictionary(w => w.Handle, w => new SizeLimits(w.MinWidth, w.MinHeight));
             var groups = GroupByMonitor(participants);
             var notes = new List<string>();
-            var plan = BuildPlan(kind, groups, gap, limits, notes, options.ColumnsLimit, mainSlot);
             var unfit = new List<WindowInfo>();
-
-            if (plan == null)
+            var initial = ResolveInitialPlan(
+                kind, groups, participants, movable, gap, options.ColumnsLimit, mainSlot,
+                allowMainSwap, limits, notes, unfit, log, out var plan);
+            if (initial != null)
             {
-                var fallback = ResolvePlanFallback(
-                    kind, groups, participants, movable, gap, options.ColumnsLimit, mainSlot,
-                    limits, unfit, log, out var trimmed);
-                if (fallback != null)
-                {
-                    return fallback;
-                }
-
-                // 返回 null 时一定带回了“少排几个”的计划（否则上面已经返回 Choice/Fail）
-                plan = trimmed!;
+                return initial;
             }
+
+            plan ??= new List<PlannedWindow>(); // ResolveInitialPlan 返回 null 时一定带回了计划
 
             // 只在还没有快照时记录：Ctrl+Alt+0 要回到"第一次按布局热键之前"的状态，
             // 之后连续切换布局不覆盖它，直到用户真的还原一次。
@@ -196,7 +192,9 @@ public sealed class LayoutService
                 }
 
                 var retryNotes = new List<string>();
-                var retry = BuildPlan(kind, groups, gap, limits, retryNotes, options.ColumnsLimit, mainSlot);
+                var retry = BuildPlan(
+                    kind, groups, gap, limits, retryNotes, options.ColumnsLimit, mainSlot,
+                    allowMainSwap: false, out _);
                 if (retry != null && retry.Count > 0)
                 {
                     log.Add("  retry after clamping");
@@ -268,7 +266,9 @@ public sealed class LayoutService
         var gap = Math.Clamp(options.Gap, 0, 200);
         var limits = scoped.ToDictionary(w => w.Handle, w => new SizeLimits(w.MinWidth, w.MinHeight));
         var notes = new List<string>();
-        var plan = BuildPlan(kind, GroupByMonitor(scoped.ToList()), gap, limits, notes, options.ColumnsLimit);
+        var plan = BuildPlan(
+            kind, GroupByMonitor(scoped.ToList()), gap, limits, notes, options.ColumnsLimit,
+            preferredMain: default, allowMainSwap: false, out _);
         var planned = plan?.ToDictionary(p => p.Window.Handle, p => p.Rect);
 
         var items = new List<PreviewItem>();
@@ -304,7 +304,7 @@ public sealed class LayoutService
     /// </summary>
     internal static (List<WindowRect>? Rects, string Note) PlanRects(
         LayoutKind kind, IReadOnlyList<WindowInfo> windows, WindowRect area, int gap,
-        int columnsLimit = 0, IntPtr preferredMain = default)
+        int columnsLimit = 0, IntPtr preferredMain = default, bool allowMainSwap = false)
     {
         if (windows.Count == 0)
         {
@@ -321,7 +321,9 @@ public sealed class LayoutService
             limits,
             notes,
             columnsLimit,
-            preferredMain);
+            preferredMain,
+            allowMainSwap,
+            out _);
 
         if (plan == null)
         {
@@ -628,17 +630,22 @@ public sealed class LayoutService
 
     // ---------------- 生成布局 ----------------
 
-    /// <returns>放不下时返回 null。</returns>
+    /// <returns>
+    /// 放不下时返回 null；<paramref name="mainSwap"/> 非 null 表示需要用户同意把该窗口换到主窗。
+    /// </returns>
     private static List<PlannedWindow>? BuildPlan(
         LayoutKind kind,
         List<WindowGroup> groups,
         int gap,
         Dictionary<IntPtr, SizeLimits> limits,
         List<string> notes,
-        int columnsLimit = 0,
-        IntPtr preferredMain = default)
+        int columnsLimit,
+        IntPtr preferredMain,
+        bool allowMainSwap,
+        out WindowInfo? mainSwap)
     {
         var plan = new List<PlannedWindow>();
+        mainSwap = null;
 
         foreach (var group in groups)
         {
@@ -658,7 +665,13 @@ public sealed class LayoutService
             }
             else
             {
-                rects = ZoneLayout(kind, ordered, area, gap, limits, columnsLimit, preferredMain, out note);
+                rects = ZoneLayout(
+                    kind, ordered, area, gap, limits, columnsLimit, preferredMain,
+                    allowMainSwap, out var swap, out note);
+                if (swap != null)
+                {
+                    mainSwap = swap;
+                }
             }
 
             if (rects == null)
@@ -681,8 +694,48 @@ public sealed class LayoutService
     }
 
     /// <summary>
+    /// 初始规划 + “装不下”兜底：与 <see cref="ApplyCore"/> 走同一条路径，抽出来便于无头验证。
+    /// 返回 null 表示可以继续应用（计划通过 <paramref name="plan"/> 带回）；
+    /// 返回 <see cref="LayoutResult"/> 表示需要界面决策（换主窗 / 最小化 / 失败）。
+    /// </summary>
+    internal static LayoutResult? ResolveInitialPlan(
+        LayoutKind kind,
+        List<WindowGroup> groups,
+        List<WindowInfo> participants,
+        List<WindowInfo> movable,
+        int gap,
+        int columnsLimit,
+        IntPtr mainSlot,
+        bool allowMainSwap,
+        Dictionary<IntPtr, SizeLimits> limits,
+        List<string> notes,
+        List<WindowInfo> unfit,
+        List<string> log,
+        out List<PlannedWindow>? plan)
+    {
+        plan = BuildPlan(
+            kind, groups, gap, limits, notes, columnsLimit, mainSlot, allowMainSwap, out var mainSwap);
+
+        if (plan == null && mainSwap != null && mainSlot == IntPtr.Zero && allowMainSwap)
+        {
+            log.Add($"  needs main swap \"{mainSwap.Title}\" " +
+                    $"min={mainSwap.MinWidth}x{mainSwap.MinHeight}");
+            return LayoutResult.ConfirmMain(kind, mainSwap);
+        }
+
+        if (plan != null)
+        {
+            return null;
+        }
+
+        return ResolvePlanFallback(
+            kind, groups, participants, movable, gap, columnsLimit, mainSlot, allowMainSwap,
+            limits, unfit, log, out plan);
+    }
+
+    /// <summary>
     /// ApplyCore 的“装不下”兜底，抽出来便于无头验证：
-    /// 1) 网格先试“把声明需求最大的窗口换到主窗”；
+    /// 1) 网格先试“把声明需求最大的窗口换到主窗”（仅在允许换主窗时；用户拒绝后不再问）；
     /// 2) 网格按 docs/GRID.md 先问“最小化最久未使用的 N 个后重排”；
     /// 3) 其它布局沿用“前台优先少排几个、放不下的保持原位”；
     /// 4) 连一个窗口都排不下时提示改用层叠。
@@ -697,6 +750,7 @@ public sealed class LayoutService
         int gap,
         int columnsLimit,
         IntPtr mainSlot,
+        bool allowMainSwap,
         Dictionary<IntPtr, SizeLimits> limits,
         List<WindowInfo> unfit,
         List<string> log,
@@ -705,8 +759,8 @@ public sealed class LayoutService
         plan = null;
 
         // 网格：先看“把声明需求最大的窗口换到主窗”能不能排下。
-        // 能排下也不擅自换，返回给界面弹窗让用户决定。
-        if (kind == LayoutKind.Grid && mainSlot == IntPtr.Zero && participants.Count > 1)
+        // 能排下也不擅自换，返回给界面弹窗让用户决定；用户已经拒绝换主窗后不再走这条。
+        if (allowMainSwap && kind == LayoutKind.Grid && mainSlot == IntPtr.Zero && participants.Count > 1)
         {
             var candidate = participants
                 .OrderByDescending(w => RequiredArea(w, limits))
@@ -714,7 +768,7 @@ public sealed class LayoutService
 
             if (BuildPlan(
                     kind, groups, gap, limits, new List<string>(),
-                    columnsLimit, candidate.Handle) != null)
+                    columnsLimit, candidate.Handle, allowMainSwap: false, out _) != null)
             {
                 log.Add($"  suggest main slot \"{candidate.Title}\" " +
                         $"min={candidate.MinWidth}x{candidate.MinHeight}");
@@ -744,7 +798,7 @@ public sealed class LayoutService
 
             var attempt = BuildPlan(
                 kind, GroupByMonitor(candidates), gap, limits,
-                new List<string>(), columnsLimit, mainSlot);
+                new List<string>(), columnsLimit, mainSlot, allowMainSwap: false, out _);
             if (attempt != null)
             {
                 plan = attempt;
@@ -789,7 +843,9 @@ public sealed class LayoutService
             }
 
             var notes = new List<string>();
-            if (BuildPlan(kind, GroupByMonitor(rest), gap, limits, notes, columnsLimit) != null)
+            if (BuildPlan(
+                    kind, GroupByMonitor(rest), gap, limits, notes, columnsLimit,
+                    preferredMain: default, allowMainSwap: false, out _) != null)
             {
                 return victims;
             }
@@ -838,12 +894,16 @@ public sealed class LayoutService
     /// 任一格（包括只剩一个窗口时）小于窗口声明的最小尺寸就返回 null，交给外层
     /// “最小化 / 换主窗 / 层叠”提示逻辑。
     /// <paramref name="preferredMain"/> 只用于网格的“主窗槽位”，其它布局用前台窗口当主窗。
+    /// <paramref name="allowMainSwap"/> 为 false 时只接受“自然主窗”的网格解；
+    /// 否则当自然主窗排不下、必须换主窗时，<paramref name="mainSwap"/> 会带回那个窗口。
     /// </summary>
     private static List<WindowRect>? ZoneLayout(
         LayoutKind kind, List<WindowInfo> windows, WindowRect area, int gap,
-        Dictionary<IntPtr, SizeLimits> limits, int columnsLimit, IntPtr preferredMain, out string? note)
+        Dictionary<IntPtr, SizeLimits> limits, int columnsLimit, IntPtr preferredMain,
+        bool allowMainSwap, out WindowInfo? mainSwap, out string? note)
     {
         note = null;
+        mainSwap = null;
 
         // FitToMinimumSizes 读的是 WindowInfo 上的最小尺寸；重试时 limits 可能被系统实际撑大，
         // 这里用快照副本把两者合并，保证一次性布局和工作区按同一份最小尺寸拟合。
@@ -860,13 +920,30 @@ public sealed class LayoutService
             note = $"「{pinned.Title}」已放到主窗";
         }
 
-        var workspace = kind switch
+        ZoneWorkspace workspace;
+        if (kind == LayoutKind.Grid)
         {
-            LayoutKind.Grid => ZoneWorkspace.PlanGrid(ordered, area, gap)
-                               ?? ZoneWorkspace.Create(LayoutKind.Grid, ordered, area, gap),
-            LayoutKind.Columns => ZoneWorkspace.PlanColumns(ordered, area, gap, columnsLimit),
-            _ => ZoneWorkspace.Create(kind, ordered, area, gap),
-        };
+            var gridPlan = ZoneWorkspace.PlanGrid(
+                ordered, area, gap, keepMain: pinned != null || !allowMainSwap);
+            if (gridPlan is { MainSwapRequested: { } suggested })
+            {
+                // 自然主窗排不下；有解但必须先问用户是否允许换主窗，不能直接应用
+                mainSwap = suggested;
+                return null;
+            }
+
+            workspace = gridPlan?.Workspace
+                        ?? ZoneWorkspace.Create(LayoutKind.Grid, ordered, area, gap);
+        }
+        else if (kind == LayoutKind.Columns)
+        {
+            workspace = ZoneWorkspace.PlanColumns(ordered, area, gap, columnsLimit);
+        }
+        else
+        {
+            workspace = ZoneWorkspace.Create(kind, ordered, area, gap);
+        }
+
         workspace.FitToMinimumSizes();
 
         var byHandle = workspace.Compute().ToDictionary(p => p.Window.Handle, p => p.Rect);
