@@ -141,6 +141,24 @@ public sealed class ZoneWorkspace
         return new ZoneWorkspace(ZoneNode.Split(true, left, right, 0.62), area, gap);
     }
 
+    /// <summary>
+    /// 3 窗口的「左日右口」：左列 62% 宽切成上下两格（日），右列 38% 宽一个窗口（口）。
+    /// 参数顺序是 [左上, 左下, 右]；leftTopRatio 是左列上格占（高度-间隙）的比例。
+    /// </summary>
+    public static ZoneWorkspace CreateLeftDay(
+        IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, double leftTopRatio)
+    {
+        if (windows.Count != 3)
+        {
+            throw new ArgumentException("需要正好 3 个窗口", nameof(windows));
+        }
+
+        var left = ZoneNode.Split(
+            false, ZoneNode.Leaf(windows[0]), ZoneNode.Leaf(windows[1]), leftTopRatio);
+
+        return new ZoneWorkspace(ZoneNode.Split(true, left, ZoneNode.Leaf(windows[2]), 0.62), area, gap);
+    }
+
     /// <summary>算出每个窗口的目标矩形（可见边框）。</summary>
     public List<ZonePlacement> Compute()
     {

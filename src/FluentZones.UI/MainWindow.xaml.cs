@@ -1959,6 +1959,15 @@ public sealed partial class MainWindow : Window
     private ZoneWorkspace CreateZoneWorkspace(
         LayoutKind kind, List<WindowInfo> windows, WindowRect area, int gap)
     {
+        if (windows.Count == 3)
+        {
+            var leftDay = TryCreateLeftDay(windows, area, gap);
+            if (leftDay != null)
+            {
+                return leftDay;
+            }
+        }
+
         if (windows.Count == 4)
         {
             var twoRows = TryCreateTwoRows(windows, area, gap);
@@ -1969,6 +1978,49 @@ public sealed partial class MainWindow : Window
         }
 
         return ZoneWorkspace.Create(kind, windows, area, gap);
+    }
+
+    private ZoneWorkspace? TryCreateLeftDay(List<WindowInfo> windows, WindowRect area, int gap)
+    {
+        // 顺序是 [左上, 左下, 右]；自然：主窗=第 1 个、副主窗=第 2 个、右=第 3 个
+        var natural = new[] { 0, 1, 2 };
+        var orders = Permutations(new[] { 0, 1, 2 })
+            .OrderByDescending(p => p.SequenceEqual(natural))
+            .ToList();
+
+        var usableW = area.Width - gap;
+        var leftW = (int)Math.Round(usableW * 0.62);
+        var rightW = usableW - leftW;
+        var usableH = area.Height - gap;
+
+        // 左列上下先按 50/50，最小高度不够时再按需加高（副主窗高度 ≤50%）
+        var half = (int)Math.Floor(usableH * 0.5);
+
+        foreach (var order in orders)
+        {
+            var lt = windows[order[0]];
+            var lb = windows[order[1]];
+            var right = windows[order[2]];
+
+            if (leftW < lt.MinWidth || leftW < lb.MinWidth || rightW < right.MinWidth)
+            {
+                continue;
+            }
+
+            var bottom = Math.Max(half, lb.MinHeight);
+            bottom = Math.Min(bottom, half);
+            var top = usableH - bottom;
+
+            if (top < lt.MinHeight || bottom < lb.MinHeight || usableH < right.MinHeight)
+            {
+                continue;
+            }
+
+            return ZoneWorkspace.CreateLeftDay(
+                new[] { lt, lb, right }, area, gap, (double)top / usableH);
+        }
+
+        return null;
     }
 
     private ZoneWorkspace? TryCreateTwoRows(List<WindowInfo> windows, WindowRect area, int gap)
