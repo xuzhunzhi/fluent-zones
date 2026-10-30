@@ -6,7 +6,7 @@
 src/FluentZones.Core/         纯 C#，无 UI 依赖，可单测
   NativeMethods.cs            Win32 声明
   WindowCollector.cs          窗口枚举与筛选、最小尺寸、权限判断
-  LayoutService.cs            一次性布局的外层策略（格数上限、主窗槽位、放不下提示）、摆放与快照/还原
+  LayoutService.cs            一次性布局的外层策略（格数上限、换主窗确认、放不下提示）、摆放与快照/还原
   LayoutNames.cs              布局名称、热键动作解析
   HotkeyManager.cs            全局热键（独立线程 + 隐藏窗口 + 消息循环）
   HotkeyCombo.cs              热键解析/格式化

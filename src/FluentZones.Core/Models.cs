@@ -70,21 +70,14 @@ public sealed record LayoutResult(
     /// <summary>有可行解，但需要用户同意把 <see cref="SuggestedMain"/> 换到主窗。</summary>
     public bool NeedsMainSwap => NeedsConfirmMain && SuggestedMain != null;
 
-    /// <summary>网格放不下，但把 <see cref="SuggestedMain"/> 换到主窗就能排下，等用户确认。</summary>
-    public bool NeedsMainSlot => SuggestedMain != null && !NeedsConfirmMain;
-
     public static LayoutResult Fail(string message) => new(false, message, 0);
 
     /// <summary>放不下，建议最小化这些窗口后重试。</summary>
     public static LayoutResult Choice(LayoutKind kind, IReadOnlyList<WindowInfo> victims) =>
         new(false, "窗口最小尺寸放不下", 0, kind, true, victims);
 
-    /// <summary>放不下，但把这个窗口换到主窗就能排下。</summary>
-    public static LayoutResult MainSlot(LayoutKind kind, WindowInfo window) =>
-        new(false, $"「{window.Title}」声明的最小尺寸较大，可以放到主窗", 0, kind, SuggestedMain: window);
-
     /// <summary>网格有可行解，但必须先得到用户同意把该窗口换到主窗（不能不问就换）。</summary>
     public static LayoutResult ConfirmMain(LayoutKind kind, WindowInfo window) =>
-        new(false, $"网格排不下，需要把「{window.Title}」换到主窗才能排下", 0, kind,
+        new(false, $"需要把「{window.Title}」换到主窗才能排下，是否允许？", 0, kind,
             SuggestedMain: window, NeedsConfirmMain: true);
 }

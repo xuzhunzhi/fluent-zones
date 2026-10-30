@@ -93,6 +93,12 @@ public sealed class ZoneSession : IDisposable
     public Func<bool>? IsInteractionBusy { get; set; }
 
     /// <summary>
+    /// 校验通过、尚未移动窗口时回调（UI 用来记录进入前的窗口位置快照）。
+    /// 进入失败时不会触发，因此失败不会污染快照。
+    /// </summary>
+    public Action<IReadOnlyList<WindowInfo>>? BeforeApply { get; set; }
+
+    /// <summary>
     /// 进入工作区，或按新布局重建（窗口句柄集合按传入的窗口重置）。
     /// 返回 false = 最小尺寸放不下或换主窗未获允许，没有应用这个布局（状态栏已说明原因）。
     /// </summary>
@@ -138,6 +144,9 @@ public sealed class ZoneSession : IDisposable
                 ZoneStatusLevel.Warn);
             return false;
         }
+
+        // 到这里才确定会应用：让 UI 记录进入前的窗口位置（失败路径不会污染快照）
+        BeforeApply?.Invoke(windows);
 
         Kind = kind;
         Monitor = monitor;
@@ -393,13 +402,49 @@ public sealed class ZoneSession : IDisposable
 
                     if (approved)
                     {
-                        Workspace = workspace;
-                        _dragHook?.Refresh(workspace);
-                        Apply(workspace);
+                        // 对话框期间窗口可能变化：重新枚举一次，用“批准的主窗”重新规划后应用，
+                        // 让工作区与一次性布局批准后的 pinned 结果逐像素一致。
+                        var latest = _collectWindows()
+                            .Where(w => !w.CannotMove && w.Monitor == Monitor)
+                            .ToList();
+                        if (generation != _sessionGeneration || Workspace == null)
+                        {
+                            return;
+                        }
+
+                        var latestMain = latest.FirstOrDefault(w => w.Handle == swap.Handle);
+                        if (latest.Count == 0 || latestMain == null)
+                        {
+                            StatusRequested?.Invoke(
+                                "分区模式：窗口在询问期间发生变化，已取消换主窗", ZoneStatusLevel.Warn);
+                            return;
+                        }
+
+                        var pinned = new List<WindowInfo>(latest.Count) { latestMain };
+                        pinned.AddRange(latest.Where(w => w.Handle != latestMain.Handle));
+                        var (swapped, stillNeedsSwap) = CreateWorkspace(
+                            Kind, pinned, area, gap, allowMainSwap: false);
+                        swapped.FitToMinimumSizes();
+                        if (stillNeedsSwap != null || !ZoneFits(swapped))
+                        {
+                            StatusRequested?.Invoke(
+                                "分区模式：窗口在询问期间发生变化，未能换主窗", ZoneStatusLevel.Warn);
+                            return;
+                        }
+
+                        _windowHandles.Clear();
+                        foreach (var window in latest)
+                        {
+                            _windowHandles.Add(window.Handle);
+                        }
+
+                        Workspace = swapped;
+                        _dragHook?.Refresh(swapped);
+                        Apply(swapped);
 
                         var swapChange = newcomers.Count > 0
-                            ? $"新窗口已加入（{candidates.Count} 个，已换主窗）"
-                            : $"窗口已离开（{candidates.Count} 个，已换主窗）";
+                            ? $"新窗口已加入（{latest.Count} 个，已换主窗）"
+                            : $"窗口已离开（{latest.Count} 个，已换主窗）";
                         StatusRequested?.Invoke(
                             $"分区模式（{LayoutNames.Display(Kind)}）：{swapChange}", ZoneStatusLevel.Info);
                         return;

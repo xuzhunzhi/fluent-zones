@@ -405,76 +405,72 @@ public sealed class ZoneWorkspace
         IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, bool keepMain)
     {
         var natural = new[] { 0, 1, 2 };
-
-        // 先穷举“自然主窗还在主窗”的排列：这档不需要问用户
-        foreach (var order in MainPermutations(natural, keepMain: true))
+        var mainPlan = SearchLeftDay(windows, area, gap, natural);
+        if (FitsAfterMinimumFit(mainPlan))
         {
-            var workspace = CreateLeftDay(OrderWindows(windows, order), area, gap, 0.5);
-            if (FitsAfterMinimumFit(workspace))
-            {
-                return new ZoneGridPlan(workspace, null);
-            }
+            return new ZoneGridPlan(mainPlan, null);
         }
 
         if (keepMain)
         {
             // 没有能全放下的分配时也保持「左日右口」的形状，按自然顺序铺；调用方判断放不下
-            return new ZoneGridPlan(CreateLeftDay(OrderWindows(windows, natural), area, gap, 0.5), null);
+            return new ZoneGridPlan(mainPlan, null);
         }
 
-        // 再找“换主窗”的排列；找到也必须交给用户确认，不能直接应用
-        foreach (var order in MainPermutations(natural, keepMain: false))
-        {
-            if (order[0] == natural[0])
-            {
-                continue;
-            }
+        // 换主窗：按“需求面积降序”逐个主窗候选做固定主窗搜索；找到也必须交给用户确认
+        var swapped = TrySwappedMain(
+            windows, index => SearchLeftDay(PinnedOrder(windows, index), area, gap, natural));
+        return swapped ?? new ZoneGridPlan(mainPlan, null);
+    }
 
+    private static ZoneWorkspace SearchLeftDay(
+        IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, int[] natural)
+    {
+        foreach (var order in FixedMainPermutations(natural))
+        {
             var workspace = CreateLeftDay(OrderWindows(windows, order), area, gap, 0.5);
             if (FitsAfterMinimumFit(workspace))
             {
-                return new ZoneGridPlan(workspace, windows[order[0]]);
+                return workspace;
             }
         }
 
-        return new ZoneGridPlan(CreateLeftDay(OrderWindows(windows, natural), area, gap, 0.5), null);
+        return CreateLeftDay(OrderWindows(windows, natural), area, gap, 0.5);
     }
 
     private static ZoneGridPlan PlanTwoRows(
         IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, bool keepMain)
     {
         var natural = new[] { 0, 2, 1, 3 };
-
-        foreach (var order in MainPermutations(natural, keepMain: true))
+        var mainPlan = SearchTwoRows(windows, area, gap, natural);
+        if (FitsAfterMinimumFit(mainPlan))
         {
-            var workspace = CreateTwoRows(OrderWindows(windows, order), area, gap, MainRatio);
-            if (FitsAfterMinimumFit(workspace))
-            {
-                return new ZoneGridPlan(workspace, null);
-            }
+            return new ZoneGridPlan(mainPlan, null);
         }
 
         if (keepMain)
         {
-            return new ZoneGridPlan(CreateTwoRows(OrderWindows(windows, natural), area, gap, MainRatio), null);
+            return new ZoneGridPlan(mainPlan, null);
         }
 
-        foreach (var order in MainPermutations(natural, keepMain: false))
-        {
-            if (order[0] == natural[0])
-            {
-                continue;
-            }
+        var swapped = TrySwappedMain(
+            windows, index => SearchTwoRows(PinnedOrder(windows, index), area, gap, natural));
+        return swapped ?? new ZoneGridPlan(mainPlan, null);
+    }
 
+    private static ZoneWorkspace SearchTwoRows(
+        IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, int[] natural)
+    {
+        foreach (var order in FixedMainPermutations(natural))
+        {
             var workspace = CreateTwoRows(OrderWindows(windows, order), area, gap, MainRatio);
             if (FitsAfterMinimumFit(workspace))
             {
-                return new ZoneGridPlan(workspace, windows[order[0]]);
+                return workspace;
             }
         }
 
-        return new ZoneGridPlan(
-            CreateTwoRows(OrderWindows(windows, natural), area, gap, MainRatio), null);
+        return CreateTwoRows(OrderWindows(windows, natural), area, gap, MainRatio);
     }
 
     /// <summary>
@@ -485,37 +481,80 @@ public sealed class ZoneWorkspace
         IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, bool keepMain)
     {
         var natural = Enumerable.Range(0, windows.Count).ToArray();
-
-        foreach (var order in MainPermutations(natural, keepMain: true))
+        var mainPlan = SearchMosaic(windows, area, gap, natural);
+        if (FitsAfterMinimumFit(mainPlan))
         {
-            var workspace = new ZoneWorkspace(Grid(OrderWindows(windows, order)), area, gap);
-            if (FitsAfterMinimumFit(workspace))
-            {
-                return new ZoneGridPlan(workspace, null);
-            }
+            return new ZoneGridPlan(mainPlan, null);
         }
 
         if (keepMain)
         {
-            return new ZoneGridPlan(Create(LayoutKind.Grid, windows, area, gap), null);
+            return new ZoneGridPlan(mainPlan, null);
         }
 
-        foreach (var order in MainPermutations(natural, keepMain: false))
-        {
-            if (order[0] == natural[0])
-            {
-                continue;
-            }
+        var swapped = TrySwappedMain(
+            windows, index => SearchMosaic(PinnedOrder(windows, index), area, gap, natural));
+        return swapped ?? new ZoneGridPlan(mainPlan, null);
+    }
 
+    private static ZoneWorkspace SearchMosaic(
+        IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, int[] natural)
+    {
+        foreach (var order in FixedMainPermutations(natural))
+        {
             var workspace = new ZoneWorkspace(Grid(OrderWindows(windows, order)), area, gap);
             if (FitsAfterMinimumFit(workspace))
             {
-                return new ZoneGridPlan(workspace, windows[order[0]]);
+                return workspace;
             }
         }
 
-        return new ZoneGridPlan(Create(LayoutKind.Grid, windows, area, gap), null);
+        return Create(LayoutKind.Grid, windows, area, gap);
     }
+
+    /// <summary>
+    /// 换主窗搜索：候选按“需求面积降序”逐个尝试，用该窗口当主窗再跑一次固定主窗搜索。
+    /// 这样返回的 workspace 与“用户同意后、一次性布局用 pinned 重规划”得到的完全一致。
+    /// </summary>
+    private static ZoneGridPlan? TrySwappedMain(
+        IReadOnlyList<WindowInfo> windows, Func<int, ZoneWorkspace> buildPinned)
+    {
+        var candidates = Enumerable.Range(1, windows.Count - 1)
+            .OrderByDescending(index => RequiredArea(windows[index]));
+
+        foreach (var index in candidates)
+        {
+            var workspace = buildPinned(index);
+            if (FitsAfterMinimumFit(workspace))
+            {
+                return new ZoneGridPlan(workspace, windows[index]);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>把指定窗口放到主窗位（[0]），其余保持原顺序。</summary>
+    private static WindowInfo[] PinnedOrder(IReadOnlyList<WindowInfo> windows, int mainIndex)
+    {
+        var ordered = new WindowInfo[windows.Count];
+        ordered[0] = windows[mainIndex];
+        var write = 1;
+        for (var i = 0; i < windows.Count; i++)
+        {
+            if (i != mainIndex)
+            {
+                ordered[write++] = windows[i];
+            }
+        }
+
+        return ordered;
+    }
+
+    /// <summary>换主窗候选的排序依据：窗口声明的需求面积。</summary>
+    private static long RequiredArea(WindowInfo window) =>
+        (long)Math.Max(window.MinWidth, AbsoluteMinWidth) *
+        Math.Max(window.MinHeight, AbsoluteMinHeight);
 
     private static WindowInfo[] OrderWindows(IReadOnlyList<WindowInfo> windows, IReadOnlyList<int> order)
     {
@@ -529,18 +568,10 @@ public sealed class ZoneWorkspace
     }
 
     /// <summary>
-    /// 枚举窗口分配：<paramref name="natural"/> 是默认顺序（第一个窗口当主窗，其余按自然顺序填格）；
-    /// <paramref name="keepMain"/> 时只枚举第一个窗口固定在主窗的排列。
+    /// 固定第一个窗口当主窗：只枚举其余窗口的排列，默认顺序优先。
     /// </summary>
-    private static List<int[]> MainPermutations(int[] natural, bool keepMain)
+    private static List<int[]> FixedMainPermutations(int[] natural)
     {
-        if (!keepMain)
-        {
-            return Permutations(natural)
-                .OrderByDescending(order => order.SequenceEqual(natural))
-                .ToList();
-        }
-
         var rest = natural.Skip(1).ToArray();
         return Permutations(rest)
             .OrderByDescending(order => order.SequenceEqual(rest))

@@ -77,6 +77,15 @@ public sealed partial class MainWindow : Window
         _zones.OverflowRequested = AskZoneOverflowAsync;
         _zones.MainSwapRequested = AskMainSwapAsync;
         _zones.IsInteractionBusy = () => _prompting;
+        // 只记第一次进入前的窗口位置：Ctrl+Alt+0 永远回到非工作区状态；
+        // 放在 EnterAsync 校验通过、尚未移动窗口时执行，进入失败不会污染快照。
+        _zones.BeforeApply = windows =>
+        {
+            if (!_zones.IsActive)
+            {
+                _layouts.CaptureSnapshot(windows);
+            }
+        };
 
         Title = "Fluent Zones";
         AppWindow.Title = "Fluent Zones";
@@ -1265,13 +1274,6 @@ public sealed partial class MainWindow : Window
         Cancel,
     }
 
-    private enum MainSlotChoice
-    {
-        UseMain,
-        Cascade,
-        Cancel,
-    }
-
     private async void ApplyLayout(LayoutKind kind) =>
         await ApplyLayoutAsync(kind, CurrentOptions().Scope);
 
@@ -1318,26 +1320,6 @@ public sealed partial class MainWindow : Window
                 }
 
                 return;
-            }
-
-            // 网格装不下，但把声明需求最大的窗口换到主窗就能排：先弹窗问，用户点头才重排，
-            // 不擅自改变窗口位置（也不能退回"均分竖条"那种跟网格无关的排法）
-            if (result.NeedsMainSlot && forcedMain == IntPtr.Zero &&
-                result.SuggestedMain is { } candidate)
-            {
-                switch (await AskMainSlotAsync(kind, candidate))
-                {
-                    case MainSlotChoice.UseMain:
-                        await ApplyLayoutAsync(
-                            kind, scope, candidate.Handle, allowMainSwap, minimizeOldest);
-                        return;
-                    case MainSlotChoice.Cascade:
-                        result = _layouts.Apply(LayoutKind.Cascade, options);
-                        break;
-                    default:
-                        UpdateStatus("已取消排列", StatusLevel.Info);
-                        return;
-                }
             }
 
             if (result.NeedsChoice)
@@ -1435,54 +1417,6 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 网格里某个窗口声明的最小尺寸塞不进它分到的格子，但换到主窗就排得下。
-    /// 不擅自搬窗口，交给用户确认（放到主窗 / 改用层叠 / 取消）。
-    /// </summary>
-    private async Task<MainSlotChoice> AskMainSlotAsync(LayoutKind kind, WindowInfo candidate)
-    {
-        if (_prompting)
-        {
-            return MainSlotChoice.Cancel;
-        }
-
-        _prompting = true;
-
-        try
-        {
-            BringWindowToFront();
-
-            var declared = candidate.MinWidth > 0 && candidate.MinHeight > 0
-                ? $"它声明的最小尺寸是 {candidate.MinWidth}×{candidate.MinHeight}，"
-                : string.Empty;
-
-            var dialog = new ContentDialog
-            {
-                XamlRoot = RootGrid.XamlRoot,
-                Title = "这个窗口更适合放到主窗",
-                Content =
-                    $"{declared}装不进「{LayoutNames.Display(kind)}」给它分的格子。\n\n" +
-                    "把它放到主窗（最大的一块）通常是最合适的做法。",
-                PrimaryButtonText = "放到主窗",
-                SecondaryButtonText = "改用层叠",
-                CloseButtonText = "取消",
-                DefaultButton = ContentDialogButton.Primary,
-            };
-
-            var result = await dialog.ShowAsync();
-            return result switch
-            {
-                ContentDialogResult.Primary => MainSlotChoice.UseMain,
-                ContentDialogResult.Secondary => MainSlotChoice.Cascade,
-                _ => MainSlotChoice.Cancel,
-            };
-        }
-        finally
-        {
-            _prompting = false;
-        }
-    }
-
-    /// <summary>
     /// 网格只有把某个窗口换到主窗才排得下：必须先得到用户许可。
     /// 一次性布局和分区工作区共用这个对话框。
     /// </summary>
@@ -1490,6 +1424,7 @@ public sealed partial class MainWindow : Window
     {
         if (_prompting)
         {
+            UpdateStatus("正在处理另一个对话框，请稍后再试", StatusLevel.Warn);
             return false;
         }
 
@@ -1505,8 +1440,8 @@ public sealed partial class MainWindow : Window
                 XamlRoot = RootGrid.XamlRoot,
                 Title = "网格排不下，需要换主窗",
                 Content =
-                    $"「{window.Title}」的最小尺寸只有主窗位置放得下。\n\n" +
-                    "允许把它换到主窗吗？不允许的话会保持自然主窗，按“放不下”处理。",
+                    $"需要把「{window.Title}」换到主窗才能排下，是否允许？\n\n" +
+                    "不允许的话会保持自然主窗，按“放不下”处理。",
                 PrimaryButtonText = "允许换主窗",
                 CloseButtonText = "不允许",
                 DefaultButton = ContentDialogButton.Primary,
@@ -1716,12 +1651,6 @@ public sealed partial class MainWindow : Window
             }
 
             var effective = kind ?? (windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid);
-
-            // 只记第一次进入前的窗口位置：Ctrl+Alt+0 永远回到非工作区状态
-            if (!_zones.IsActive)
-            {
-                _layouts.CaptureSnapshot(windows);
-            }
 
             // Core 会先校验最小尺寸 / 换主窗许可：失败时状态栏已经说明，不要在这里再显示“已进入”
             if (!await _zones.EnterAsync(effective, windows, monitor))

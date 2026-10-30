@@ -729,16 +729,15 @@ public sealed class LayoutService
         }
 
         return ResolvePlanFallback(
-            kind, groups, participants, movable, gap, columnsLimit, mainSlot, allowMainSwap,
+            kind, groups, participants, movable, gap, columnsLimit, mainSlot,
             limits, unfit, log, out plan);
     }
 
     /// <summary>
     /// ApplyCore 的“装不下”兜底，抽出来便于无头验证：
-    /// 1) 网格先试“把声明需求最大的窗口换到主窗”（仅在允许换主窗时；用户拒绝后不再问）；
-    /// 2) 网格按 docs/GRID.md 先问“最小化最久未使用的 N 个后重排”；
-    /// 3) 其它布局沿用“前台优先少排几个、放不下的保持原位”；
-    /// 4) 连一个窗口都排不下时提示改用层叠。
+    /// 1) 网格按 docs/GRID.md 先问“最小化最久未使用的 N 个后重排”；
+    /// 2) 其它布局沿用“前台优先少排几个、放不下的保持原位”；
+    /// 3) 连一个窗口都排不下时提示改用层叠。
     /// 成功少排时通过 <paramref name="plan"/> 返回计划并返回 null；
     /// 需要界面决策时返回对应的 <see cref="LayoutResult"/>。
     /// </summary>
@@ -750,7 +749,6 @@ public sealed class LayoutService
         int gap,
         int columnsLimit,
         IntPtr mainSlot,
-        bool allowMainSwap,
         Dictionary<IntPtr, SizeLimits> limits,
         List<WindowInfo> unfit,
         List<string> log,
@@ -758,26 +756,8 @@ public sealed class LayoutService
     {
         plan = null;
 
-        // 网格：先看“把声明需求最大的窗口换到主窗”能不能排下。
-        // 能排下也不擅自换，返回给界面弹窗让用户决定；用户已经拒绝换主窗后不再走这条。
-        if (allowMainSwap && kind == LayoutKind.Grid && mainSlot == IntPtr.Zero && participants.Count > 1)
-        {
-            var candidate = participants
-                .OrderByDescending(w => RequiredArea(w, limits))
-                .First();
-
-            if (BuildPlan(
-                    kind, groups, gap, limits, new List<string>(),
-                    columnsLimit, candidate.Handle, allowMainSwap: false, out _) != null)
-            {
-                log.Add($"  suggest main slot \"{candidate.Title}\" " +
-                        $"min={candidate.MinWidth}x{candidate.MinHeight}");
-                return LayoutResult.MainSlot(kind, candidate);
-            }
-        }
-
         // 网格且多个窗口都放不下：先问“最小化 N 个后重排”（docs/GRID.md），
-        // 不再静默把放不下的窗口留在原位。其它布局保持“前台优先少排几个”的约定。
+        // 不静默把放不下的窗口留在原位。其它布局保持“前台优先少排几个”的约定。
         if (kind == LayoutKind.Grid)
         {
             var suggestion = FindMinimalMinimize(movable, kind, gap, limits, columnsLimit);
@@ -978,13 +958,6 @@ public sealed class LayoutService
         Dpi = window.Dpi,
         CannotMove = window.CannotMove,
     };
-
-    /// <summary>窗口"声明的最小尺寸"面积，用来决定谁更该占主窗。</summary>
-    private static long RequiredArea(WindowInfo window, Dictionary<IntPtr, SizeLimits> limits)
-    {
-        var limit = limits[window.Handle];
-        return (long)Math.Max(limit.Width, MinWidth) * Math.Max(limit.Height, MinHeight);
-    }
 
     // ---------------- 执行 ----------------
 
