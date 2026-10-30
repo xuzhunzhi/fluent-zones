@@ -81,6 +81,7 @@ public sealed class ZoneSession : IDisposable
     public void Enter(LayoutKind kind, IReadOnlyList<WindowInfo> windows, IntPtr monitor)
     {
         var workspace = CreateWorkspace(kind, windows, _getArea(monitor), _getGap());
+        workspace.FitToMinimumSizes();
 
         Kind = kind;
         Monitor = monitor;
@@ -305,6 +306,7 @@ public sealed class ZoneSession : IDisposable
             while (true)
             {
                 var workspace = CreateWorkspace(Kind, candidates, area, gap);
+                workspace.FitToMinimumSizes();
                 if (ZoneFits(workspace))
                 {
                     Workspace = workspace;
@@ -330,6 +332,7 @@ public sealed class ZoneSession : IDisposable
                     var drop = removable.Take(k).ToList();
                     var subset = candidates.Where(w => !drop.Contains(w)).ToList();
                     var attempt = CreateWorkspace(Kind, subset, area, gap);
+                    attempt.FitToMinimumSizes();
                     if (ZoneFits(attempt))
                     {
                         victims = drop;

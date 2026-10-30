@@ -338,6 +338,54 @@ public sealed class ZoneWorkspace
     }
 
     /// <summary>
+    /// 按每个窗口声明的最小尺寸修正切分比例：某个孩子分到的格子小于它的最小宽/高时，
+    /// 把分割线推到刚好满足两边的最小尺寸（推不动就保持原比例）。
+    /// 进入工作区时也要跑一遍——不能只在“新窗口加入”时才考虑最小尺寸。
+    /// </summary>
+    public void FitToMinimumSizes()
+    {
+        Fit(Root, Area);
+    }
+
+    private void Fit(ZoneNode node, WindowRect rect)
+    {
+        if (node.Window != null)
+        {
+            return;
+        }
+
+        var a = node.First!.MinimumSize(Gap);
+        var b = node.Second!.MinimumSize(Gap);
+
+        if (node.Horizontal)
+        {
+            var usable = Math.Max(rect.Width - Gap, 2);
+            var minFirst = Math.Min(a.Width, usable - 2);
+            var maxFirst = Math.Max(minFirst, usable - b.Width);
+            if (maxFirst >= minFirst)
+            {
+                var first = (int)Math.Clamp(Math.Round(usable * node.Ratio), minFirst, maxFirst);
+                node.Ratio = Math.Clamp(first / (double)usable, 0.02, 0.98);
+            }
+        }
+        else
+        {
+            var usable = Math.Max(rect.Height - Gap, 2);
+            var minTop = Math.Min(a.Height, usable - 2);
+            var maxTop = Math.Max(minTop, usable - b.Height);
+            if (maxTop >= minTop)
+            {
+                var top = (int)Math.Clamp(Math.Round(usable * node.Ratio), minTop, maxTop);
+                node.Ratio = Math.Clamp(top / (double)usable, 0.02, 0.98);
+            }
+        }
+
+        var (firstRect, secondRect) = SplitRect(rect, node);
+        Fit(node.First!, firstRect);
+        Fit(node.Second!, secondRect);
+    }
+
+    /// <summary>
     /// 拖动某个分隔线到指定屏幕坐标；返回比例是否真的变了。
     /// <paramref name="snap"/> 为 true（没按 Ctrl）时：两条同向、处于同一高度的横缝会合并成一条——
     /// 拖左列的横缝，右列的横缝跟着走；两条错开时拖到接近同一高度会自动吸附。
