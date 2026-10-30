@@ -1959,21 +1959,25 @@ public sealed partial class MainWindow : Window
     private ZoneWorkspace CreateZoneWorkspace(
         LayoutKind kind, List<WindowInfo> windows, WindowRect area, int gap)
     {
-        if (windows.Count == 3)
+        // 只改「网格平铺」：3 窗左日右口、4 窗左右两个日；其它布局（主窗在左 / 左右并排 / 上下堆叠）不动
+        if (kind == LayoutKind.Grid)
         {
-            var leftDay = TryCreateLeftDay(windows, area, gap);
-            if (leftDay != null)
+            if (windows.Count == 3)
             {
-                return leftDay;
+                var leftDay = TryCreateLeftDay(windows, area, gap);
+                if (leftDay != null)
+                {
+                    return leftDay;
+                }
             }
-        }
 
-        if (windows.Count == 4)
-        {
-            var twoRows = TryCreateTwoRows(windows, area, gap);
-            if (twoRows != null)
+            if (windows.Count == 4)
             {
-                return twoRows;
+                var twoRows = TryCreateTwoRows(windows, area, gap);
+                if (twoRows != null)
+                {
+                    return twoRows;
+                }
             }
         }
 
