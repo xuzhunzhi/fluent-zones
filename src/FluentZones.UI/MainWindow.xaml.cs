@@ -46,8 +46,9 @@ public sealed partial class MainWindow : Window
     private WinEventWatcher? _zoneWatcher;
     private bool _zoneSyncQueued;
 
-    // 分区模式的边框：由 DWM 画在窗口自己身上；间隙完全按设置里的「窗口间距」，不强制最小值
+    // 分区模式的边框：由 DWM 画在窗口自己身上；间隙固定 6px（与 22:21 那版一致）
     private const int ZoneMargin = 4;
+    private const int ZoneMinGap = 6;
     private HashSet<IntPtr> _zoneWindowHandles = new();
     private readonly HashSet<IntPtr> _zoneBordered = new();
     private readonly Dictionary<IntPtr, int> _zoneStyles = new();
@@ -1643,7 +1644,7 @@ public sealed partial class MainWindow : Window
 
             var area = ZoneArea(monitor);
             var effective = kind ?? (windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid);
-            var workspace = ZoneWorkspace.Create(effective, windows, area, CurrentOptions().Gap);
+            var workspace = ZoneWorkspace.Create(effective, windows, area, ZoneMinGap);
 
             // 只记第一次进入前的窗口位置：Ctrl+Alt+0 永远回到非工作区状态
             if (_zoneWorkspace == null)
@@ -1852,7 +1853,7 @@ public sealed partial class MainWindow : Window
             var newcomers = windows.Where(w => !oldHandles.Contains(w.Handle)).ToList();
             _zoneWindowHandles = handles;
 
-            var gap = CurrentOptions().Gap;
+            var gap = ZoneMinGap;
             var area = ZoneArea(_zoneMonitor);
             var candidates = new List<WindowInfo>(windows);
 
