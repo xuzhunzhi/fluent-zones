@@ -337,10 +337,14 @@ public sealed class ZoneWorkspace
         CollectDividers(node.Second!, second, result);
     }
 
+    /// <summary>两条缝的比例差在这个范围内就算“已经对齐”（合并后的状态）。</summary>
+    private const double TwinRatioTolerance = 1e-9;
+
     /// <summary>
     /// 按每个窗口声明的最小尺寸修正切分比例：某个孩子分到的格子小于它的最小宽/高时，
     /// 把分割线推到刚好满足两边的最小尺寸（推不动就保持原比例）。
     /// 进入工作区时也要跑一遍——不能只在“新窗口加入”时才考虑最小尺寸。
+    /// 比例本来就满足最小尺寸时不做任何改写，保留用户拖出来的值（避免取整把 62/38 改成 61.97/38.03）。
     /// </summary>
     public void FitToMinimumSizes()
     {
@@ -354,36 +358,98 @@ public sealed class ZoneWorkspace
             return;
         }
 
-        var a = node.First!.MinimumSize(Gap);
-        var b = node.Second!.MinimumSize(Gap);
-
-        if (node.Horizontal)
-        {
-            var usable = Math.Max(rect.Width - Gap, 2);
-            var minFirst = Math.Min(a.Width, usable - 2);
-            var maxFirst = Math.Max(minFirst, usable - b.Width);
-            if (maxFirst >= minFirst)
-            {
-                var first = (int)Math.Clamp(Math.Round(usable * node.Ratio), minFirst, maxFirst);
-                node.Ratio = Math.Clamp(first / (double)usable, 0.02, 0.98);
-            }
-        }
-        else
-        {
-            var usable = Math.Max(rect.Height - Gap, 2);
-            var minTop = Math.Min(a.Height, usable - 2);
-            var maxTop = Math.Max(minTop, usable - b.Height);
-            if (maxTop >= minTop)
-            {
-                var top = (int)Math.Clamp(Math.Round(usable * node.Ratio), minTop, maxTop);
-                node.Ratio = Math.Clamp(top / (double)usable, 0.02, 0.98);
-            }
-        }
-
-        var (firstRect, secondRect) = SplitRect(rect, node);
-        Fit(node.First!, firstRect);
-        Fit(node.Second!, secondRect);
+        FitSplit(node, rect);
+        FitBranches(node, rect);
     }
+
+    /// <summary>修正一个节点的比例；当前比例已经满足两边最小尺寸时保持原值。</summary>
+    private void FitSplit(ZoneNode node, WindowRect rect)
+    {
+        var horizontal = node.Horizontal;
+        var usable = UsableExtent(rect, horizontal);
+        var minFirst = Math.Min(ExtentOf(node.First!, horizontal), usable - 2);
+        var maxFirst = Math.Max(minFirst, usable - ExtentOf(node.Second!, horizontal));
+
+        var desired = (int)Math.Round(usable * node.Ratio);
+        if (desired < minFirst || desired > maxFirst)
+        {
+            node.Ratio = RatioOf(Math.Clamp(desired, minFirst, maxFirst), usable);
+        }
+    }
+
+    /// <summary>
+    /// 处理一个节点的两个孩子：两条同向缝已经合并时一起拟合，否则各自递归。
+    /// </summary>
+    private void FitBranches(ZoneNode node, WindowRect rect)
+    {
+        var first = node.First!;
+        var second = node.Second!;
+        var (firstRect, secondRect) = SplitRect(rect, node);
+
+        if (IsMergedTwinPair(first, second, firstRect, secondRect))
+        {
+            FitMergedTwins(first, second, firstRect, secondRect);
+            return;
+        }
+
+        Fit(first, firstRect);
+        Fit(second, secondRect);
+    }
+
+    /// <summary>
+    /// 两条缝算不算“已合并”：同一个父节点下的两个非叶子子树、方向相同、比例已经对齐，
+    /// 且各自的区域在切分轴上等长（左右两列同高 / 上下两行同宽）。
+    /// </summary>
+    private bool IsMergedTwinPair(
+        ZoneNode first, ZoneNode second, WindowRect firstRect, WindowRect secondRect)
+    {
+        return !first.IsLeaf && !second.IsLeaf &&
+               first.Horizontal == second.Horizontal &&
+               Math.Abs(first.Ratio - second.Ratio) <= TwinRatioTolerance &&
+               UsableExtent(firstRect, first.Horizontal) == UsableExtent(secondRect, second.Horizontal);
+    }
+
+    /// <summary>
+    /// 已合并的同向缝：比例必须一起改，用两边子树的最小尺寸取交集算出一个共同比例。
+    /// 之后只继续向下处理子树、不再各自 FitSplit——否则共同比例会被单侧的最小尺寸又推回去，
+    /// 两条缝就错开了（视觉上“日/田”的横缝被拆成两条）。
+    /// </summary>
+    private void FitMergedTwins(
+        ZoneNode first, ZoneNode second, WindowRect firstRect, WindowRect secondRect)
+    {
+        var horizontal = first.Horizontal;
+        var usable = UsableExtent(firstRect, horizontal);
+        var minFirst = Math.Min(
+            Math.Max(ExtentOf(first.First!, horizontal), ExtentOf(second.First!, horizontal)),
+            usable - 2);
+        var maxFirst = Math.Max(
+            minFirst,
+            usable - Math.Max(ExtentOf(first.Second!, horizontal), ExtentOf(second.Second!, horizontal)));
+
+        var desired = (int)Math.Round(usable * first.Ratio);
+        var fitted = Math.Clamp(desired, minFirst, maxFirst);
+        if (fitted != desired)
+        {
+            var ratio = RatioOf(fitted, usable);
+            first.Ratio = ratio;
+            second.Ratio = ratio;
+        }
+
+        FitBranches(first, firstRect);
+        FitBranches(second, secondRect);
+    }
+
+    private int UsableExtent(WindowRect rect, bool horizontal) =>
+        Math.Max((horizontal ? rect.Width : rect.Height) - Gap, 2);
+
+    private int ExtentOf(ZoneNode node, bool horizontal)
+    {
+        var size = node.MinimumSize(Gap);
+        return horizontal ? size.Width : size.Height;
+    }
+
+    private static double RatioOf(int extent, int usable) =>
+        Math.Clamp(extent / (double)usable, 0.02, 0.98);
 
     /// <summary>
     /// 拖动某个分隔线到指定屏幕坐标；返回比例是否真的变了。
@@ -393,51 +459,61 @@ public sealed class ZoneWorkspace
     /// </summary>
     public bool Drag(ZoneNode node, int screenX, int screenY, bool snap = true)
     {
-        var divider = Dividers().FirstOrDefault(d => ReferenceEquals(d.Node, node));
+        var dividers = Dividers();
+        var divider = dividers.FirstOrDefault(d => ReferenceEquals(d.Node, node));
         if (divider == null)
         {
             return false;
         }
 
         var region = divider.Region;
-        var a = node.First!.MinimumSize(Gap);
-        var b = node.Second!.MinimumSize(Gap);
         var twin = FindTwin(node);
+        var twinDivider = twin == null
+            ? null
+            : dividers.FirstOrDefault(d => ReferenceEquals(d.Node, twin));
         const double MergeTolerance = 0.02;
         var mergedBefore = twin != null && Math.Abs(node.Ratio - twin.Ratio) <= MergeTolerance;
 
-        if (node.Horizontal)
+        var horizontal = node.Horizontal;
+        var usable = UsableExtent(region, horizontal);
+        var range = MinimumRange(
+            usable, ExtentOf(node.First!, horizontal), ExtentOf(node.Second!, horizontal));
+
+        // 两条缝已经合并成一条：钳制必须同时满足两列子树的最小尺寸，
+        // 否则拖动会把合并缝上另一列先拖破最小尺寸。
+        if (snap && twin != null && twinDivider != null && mergedBefore &&
+            UsableExtent(twinDivider.Region, horizontal) == usable)
         {
-            var usable = Math.Max(region.Width - Gap, 2);
-            var minFirst = Math.Min(a.Width, usable - 2);
-            var maxFirst = Math.Max(minFirst, usable - b.Width);
-            var first = Math.Clamp(screenX - region.Left, minFirst, maxFirst);
-            var ratio = Math.Clamp(first / (double)usable, 0.02, 0.98);
-
-            if (Math.Abs(ratio - node.Ratio) < 0.0005)
+            var twinRange = MinimumRange(
+                usable, ExtentOf(twin.First!, horizontal), ExtentOf(twin.Second!, horizontal));
+            var min = Math.Max(range.Min, twinRange.Min);
+            var max = Math.Min(range.Max, twinRange.Max);
+            if (max >= min)
             {
-                return false;
+                range = (min, max);
             }
-
-            node.Ratio = ratio;
-            MergeTwin(twin, node, ratio, mergedBefore, MergeTolerance, snap);
-            return true;
         }
 
-        var usableHeight = Math.Max(region.Height - Gap, 2);
-        var minTop = Math.Min(a.Height, usableHeight - 2);
-        var maxTop = Math.Max(minTop, usableHeight - b.Height);
-        var top = Math.Clamp(screenY - region.Top, minTop, maxTop);
-        var ratioV = Math.Clamp(top / (double)usableHeight, 0.02, 0.98);
+        var position = Math.Clamp(
+            horizontal ? screenX - region.Left : screenY - region.Top, range.Min, range.Max);
+        var ratio = RatioOf(position, usable);
 
-        if (Math.Abs(ratioV - node.Ratio) < 0.0005)
+        if (Math.Abs(ratio - node.Ratio) < 0.0005)
         {
             return false;
         }
 
-        node.Ratio = ratioV;
-        MergeTwin(twin, node, ratioV, mergedBefore, MergeTolerance, snap);
+        node.Ratio = ratio;
+        MergeTwin(twin, node, ratio, mergedBefore, MergeTolerance, snap);
         return true;
+    }
+
+    /// <summary>一条缝把可用长度切成两段时的允许范围（第一段的像素区间）。</summary>
+    private static (int Min, int Max) MinimumRange(int usable, int firstMin, int secondMin)
+    {
+        var min = Math.Min(firstMin, usable - 2);
+        var max = Math.Max(min, usable - secondMin);
+        return (min, max);
     }
 
     /// <summary>
