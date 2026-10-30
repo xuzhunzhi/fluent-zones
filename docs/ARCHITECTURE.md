@@ -6,8 +6,7 @@
 src/FluentZones.Core/         纯 C#，无 UI 依赖，可单测
   NativeMethods.cs            Win32 声明
   WindowCollector.cs          窗口枚举与筛选、最小尺寸、权限判断
-  LayoutService.cs            布局几何、最小尺寸分配、快照/还原、窗口放置
-  LayoutMath.cs               纯函数：按最小尺寸分配、每行容量
+  LayoutService.cs            一次性布局的外层策略（格数上限、主窗槽位、放不下提示）、摆放与快照/还原
   LayoutNames.cs              布局名称、热键动作解析
   HotkeyManager.cs            全局热键（独立线程 + 隐藏窗口 + 消息循环）
   HotkeyCombo.cs              热键解析/格式化
@@ -61,6 +60,8 @@ ZoneOverlay     分层窗口：画线 + 命中 + 拖拽
 ```
 
 > `ZoneController` 的落地形态是 `src/FluentZones.Core/Zones/ZoneSession.cs`：切分树、窗口句柄、显示器、布局类型、边框、拖拽钩子与窗口监听都归它管；`MainWindow` 只注入窗口枚举/摆放（`LayoutService`）、状态栏、对话框、卡片高亮与快照。
+
+一次性布局也复用同一份几何：`LayoutService` 的左右并排 / 上下堆叠 / 网格 / 主窗在左都走 `ZoneWorkspace.Create` / `PlanGrid` + `FitToMinimumSizes()`，区域统一用 `ZoneWorkspace.InsetArea`（四边内缩 `ZoneMargin=4`）。因此同一组窗口在“进工作区前 / 进工作区后”的矩形逐像素一致。
 
 事件流：
 

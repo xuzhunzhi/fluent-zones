@@ -3,19 +3,15 @@ using System.Runtime.InteropServices;
 namespace FluentZones.Core;
 
 /// <summary>
-/// 布局算法：先读每个窗口自己声明的最小尺寸（WM_GETMINMAXINFO），
-/// 每个窗口先拿够最小值、剩余空间平均分；一行放不下自动分行。
+/// 一次性布局：窗口枚举/筛选、格数上限、主窗槽位、放不下时的“最小化/换主窗”建议与窗口摆放，
+/// 具体几何统一交给 <see cref="ZoneWorkspace"/>（与分区工作区共用同一份切分树 + 最小尺寸拟合）。
 /// 实在放不下时不擅自降级，而是返回"建议最小化哪些窗口"，交给界面询问用户。
 /// </summary>
 public sealed class LayoutService
 {
-    // 绝对下限，防止 0 尺寸的自绘窗口
+    // 绝对下限，防止 0 尺寸的自绘窗口（与 ZoneNode.MinimumSize 的下限一致）
     private const int MinWidth = 120;
     private const int MinHeight = 90;
-
-    // 舒适尺寸（有效像素）：比"能不能放下"更严格，避免切出一排细条
-    private const double ComfortWidth = 400;
-    private const double ComfortHeight = 320;
 
     private readonly object _gate = new();
     private List<SnapshotEntry> _snapshot = new();
@@ -151,7 +147,7 @@ public sealed class LayoutService
             var limits = movable.ToDictionary(w => w.Handle, w => new SizeLimits(w.MinWidth, w.MinHeight));
             var groups = GroupByMonitor(participants);
             var notes = new List<string>();
-            var plan = BuildPlan(kind, groups, gap, limits, notes, options.ColumnsLimit, mainSlot);
+            var plan = BuildPlan(kind, groups, gap, limits, notes, mainSlot);
             var unfit = new List<WindowInfo>();
 
             if (plan == null)
@@ -166,7 +162,7 @@ public sealed class LayoutService
 
                     if (BuildPlan(
                             kind, groups, gap, limits, new List<string>(),
-                            options.ColumnsLimit, candidate.Handle) != null)
+                            candidate.Handle) != null)
                     {
                         log.Add($"  suggest main slot \"{candidate.Title}\" " +
                                 $"min={candidate.MinWidth}x{candidate.MinHeight}");
@@ -184,7 +180,7 @@ public sealed class LayoutService
 
                     var attempt = BuildPlan(
                         kind, GroupByMonitor(candidates), gap, limits,
-                        new List<string>(), options.ColumnsLimit, mainSlot);
+                        new List<string>(), mainSlot);
                     if (attempt != null)
                     {
                         plan = attempt;
@@ -198,7 +194,7 @@ public sealed class LayoutService
                 {
                     var suggestion = kind == LayoutKind.Cascade
                         ? new List<WindowInfo>()
-                        : FindMinimalMinimize(movable, kind, gap, limits, options.ColumnsLimit);
+                        : FindMinimalMinimize(movable, kind, gap, limits);
 
                     log.Add($"  suggestion={suggestion.Count}");
 
@@ -244,7 +240,7 @@ public sealed class LayoutService
                 }
 
                 var retryNotes = new List<string>();
-                var retry = BuildPlan(kind, groups, gap, limits, retryNotes, options.ColumnsLimit, mainSlot);
+                var retry = BuildPlan(kind, groups, gap, limits, retryNotes, mainSlot);
                 if (retry != null && retry.Count > 0)
                 {
                     log.Add("  retry after clamping");
@@ -316,7 +312,7 @@ public sealed class LayoutService
         var gap = Math.Clamp(options.Gap, 0, 200);
         var limits = scoped.ToDictionary(w => w.Handle, w => new SizeLimits(w.MinWidth, w.MinHeight));
         var notes = new List<string>();
-        var plan = BuildPlan(kind, GroupByMonitor(scoped.ToList()), gap, limits, notes, options.ColumnsLimit);
+        var plan = BuildPlan(kind, GroupByMonitor(scoped.ToList()), gap, limits, notes);
         var planned = plan?.ToDictionary(p => p.Window.Handle, p => p.Rect);
 
         var items = new List<PreviewItem>();
@@ -337,12 +333,57 @@ public sealed class LayoutService
         var note = string.Join("；", notes);
         if (plan == null)
         {
-            var suggestion = FindMinimalMinimize(scoped, kind, gap, limits, options.ColumnsLimit);
+            var suggestion = FindMinimalMinimize(scoped, kind, gap, limits);
             note = (note.Length > 0 ? note + "；" : string.Empty) +
                    $"放不下，建议最小化 {suggestion.Count} 个";
         }
 
         return (items, note);
+    }
+
+    /// <summary>
+    /// 无头验证用：给定窗口快照 / 区域 / 间隙，只算矩形（不枚举真实窗口、不摆放）。
+    /// 走的是和 <see cref="Apply"/> 同一条 <see cref="BuildPlan"/>，用来校验一次性布局
+    /// 与工作区 <see cref="ZoneWorkspace"/> 的几何逐像素一致。
+    /// </summary>
+    internal static (List<WindowRect>? Rects, string Note) PlanRects(
+        LayoutKind kind, IReadOnlyList<WindowInfo> windows, WindowRect area, int gap,
+        IntPtr preferredMain = default)
+    {
+        if (windows.Count == 0)
+        {
+            return (new List<WindowRect>(), string.Empty);
+        }
+
+        var limits = windows.ToDictionary(w => w.Handle, w => new SizeLimits(w.MinWidth, w.MinHeight));
+        var ordered = PutForegroundFirst(windows.ToList());
+        var notes = new List<string>();
+        var plan = BuildPlan(
+            kind,
+            new List<WindowGroup> { new(IntPtr.Zero, ordered, area) },
+            gap,
+            limits,
+            notes,
+            preferredMain);
+
+        if (plan == null)
+        {
+            return (null, string.Join("；", notes));
+        }
+
+        var byHandle = plan.ToDictionary(p => p.Window.Handle, p => p.Rect);
+        var rects = new List<WindowRect>(windows.Count);
+        foreach (var window in windows)
+        {
+            if (!byHandle.TryGetValue(window.Handle, out var rect))
+            {
+                return (null, string.Join("；", notes));
+            }
+
+            rects.Add(rect);
+        }
+
+        return (rects, string.Join("；", notes));
     }
 
     /// <summary>分区模式用：把当前窗口位置记下来，之后 Ctrl+Alt+0 可以整体还原。</summary>
@@ -384,6 +425,7 @@ public sealed class LayoutService
         }
     }
 
+    /// <summary>显示器上的分区可用区域（含 <see cref="ZoneWorkspace.ZoneMargin"/> 的边框内缩）。</summary>
     public WindowRect GetMonitorArea(IntPtr monitor) => GetArea(monitor);
 
     public LayoutResult Restore()
@@ -558,10 +600,14 @@ public sealed class LayoutService
             .Select(g => new WindowGroup(g.Key, g.ToList(), GetArea(g.Key)))
             .ToList();
 
+    /// <summary>
+    /// 一次性布局用的区域：与工作区共用 <see cref="ZoneWorkspace.InsetArea"/>（四边内缩），
+    /// 保证同一个布局在“进工作区前 / 进工作区后”几何逐像素一致。
+    /// </summary>
     private static WindowRect GetArea(IntPtr monitor)
     {
         var area = NativeMethods.GetWorkArea(monitor);
-        return new WindowRect(area.Left, area.Top, area.Width, area.Height);
+        return ZoneWorkspace.InsetArea(new WindowRect(area.Left, area.Top, area.Width, area.Height));
     }
 
     private static List<WindowInfo> PutForegroundFirst(List<WindowInfo> windows)
@@ -632,7 +678,6 @@ public sealed class LayoutService
         int gap,
         Dictionary<IntPtr, SizeLimits> limits,
         List<string> notes,
-        int columnsLimit = 0,
         IntPtr preferredMain = default)
     {
         var plan = new List<PlannedWindow>();
@@ -646,30 +691,16 @@ public sealed class LayoutService
             }
 
             var area = group.Area;
-            var floors = GetFloors(area, ordered);
             List<WindowRect>? rects;
             string? note = null;
 
-            switch (kind)
+            if (kind == LayoutKind.Cascade)
             {
-                case LayoutKind.Cascade:
-                    rects = Cascade(ordered.Count, area);
-                    break;
-                case LayoutKind.Columns:
-                    rects = Columns(ordered, area, gap, limits, floors, columnsLimit, out note);
-                    break;
-                case LayoutKind.Rows:
-                    rects = Rows(ordered, area, gap, limits, floors, out note);
-                    break;
-                case LayoutKind.Grid:
-                    rects = Grid(ordered, area, gap, limits, preferredMain, out note);
-                    break;
-                case LayoutKind.MainLeft:
-                    rects = MainLeft(ordered, area, gap, limits, floors);
-                    break;
-                default:
-                    rects = null;
-                    break;
+                rects = Cascade(ordered.Count, area);
+            }
+            else
+            {
+                rects = ZoneLayout(kind, ordered, area, gap, limits, preferredMain, out note);
             }
 
             if (rects == null)
@@ -696,8 +727,7 @@ public sealed class LayoutService
         IReadOnlyList<WindowInfo> scoped,
         LayoutKind kind,
         int gap,
-        Dictionary<IntPtr, SizeLimits> limits,
-        int columnsLimit = 0)
+        Dictionary<IntPtr, SizeLimits> limits)
     {
         for (var count = 1; count < scoped.Count; count++)
         {
@@ -709,7 +739,7 @@ public sealed class LayoutService
             }
 
             var notes = new List<string>();
-            if (BuildPlan(kind, GroupByMonitor(rest), gap, limits, notes, columnsLimit) != null)
+            if (BuildPlan(kind, GroupByMonitor(rest), gap, limits, notes) != null)
             {
                 return victims;
             }
@@ -724,25 +754,6 @@ public sealed class LayoutService
         {
             notes.Add(note);
         }
-    }
-
-    /// <summary>把"舒适尺寸"换算成当前显示器物理像素，并限制不超过工作区一半。</summary>
-    private static Floors GetFloors(WindowRect area, List<WindowInfo> windows)
-    {
-        var dpi = windows.Count == 0 ? 96 : windows.Max(w => w.Dpi);
-        if (dpi < 96)
-        {
-            dpi = 96;
-        }
-
-        var scale = dpi / 96.0;
-        var width = (int)Math.Round(ComfortWidth * scale);
-        width = Math.Min(width, Math.Max(MinWidth, area.Width / 2));
-
-        var height = (int)Math.Round(ComfortHeight * scale);
-        height = Math.Min(height, Math.Max(MinHeight, area.Height / 2));
-
-        return new Floors(Math.Max(width, MinWidth), Math.Max(height, MinHeight));
     }
 
     private static List<WindowRect> Cascade(int count, WindowRect area)
@@ -770,265 +781,80 @@ public sealed class LayoutService
         return result;
     }
 
-    private static List<WindowRect>? Columns(
-        List<WindowInfo> windows, WindowRect area, int gap,
-        Dictionary<IntPtr, SizeLimits> limits, Floors floors, int columnsLimit, out string? note)
-    {
-        note = null;
-        if (windows.Count == 1)
-        {
-            return new List<WindowRect> { area };
-        }
-
-        var widths = windows.Select(w => limits[w.Handle].Width).ToList();
-        var perRow = LayoutMath.MaxPerCount(widths, area.Width, gap, floors.Width);
-
-        // 每行列数上限（左右并排 → 齿轮设置里选 3 / 4）
-        if (columnsLimit > 0)
-        {
-            perRow = Math.Min(perRow, columnsLimit);
-        }
-
-        var slices = Slice(windows, perRow);
-
-        var rowMins = slices.Select(slice => slice.Max(w => limits[w.Handle].Height)).ToList();
-        var rowHeights = LayoutMath.Allocate(area.Height, gap, rowMins, floors.Height);
-        if (rowHeights == null)
-        {
-            return null;
-        }
-
-        var result = new List<WindowRect>(windows.Count);
-        var y = area.Top;
-
-        for (var row = 0; row < slices.Count; row++)
-        {
-            var slice = slices[row];
-            var sizes = LayoutMath.Allocate(
-                area.Width, gap, slice.Select(w => limits[w.Handle].Width).ToList(), floors.Width);
-            if (sizes == null)
-            {
-                return null;
-            }
-
-            var x = area.Left;
-            for (var i = 0; i < slice.Count; i++)
-            {
-                result.Add(new WindowRect(x, y, sizes[i], rowHeights[row]));
-                x += sizes[i] + gap;
-            }
-
-            y += rowHeights[row] + gap;
-        }
-
-        if (slices.Count > 1)
-        {
-            note = $"分 {slices.Count} 行";
-        }
-
-        return result;
-    }
-
-    private static List<WindowRect>? Rows(
-        List<WindowInfo> windows, WindowRect area, int gap,
-        Dictionary<IntPtr, SizeLimits> limits, Floors floors, out string? note)
-    {
-        note = null;
-        if (windows.Count == 1)
-        {
-            return new List<WindowRect> { area };
-        }
-
-        var heights = windows.Select(w => limits[w.Handle].Height).ToList();
-        var perColumn = LayoutMath.MaxPerCount(heights, area.Height, gap, floors.Height);
-        var slices = Slice(windows, perColumn);
-
-        var columnMins = slices.Select(slice => slice.Max(w => limits[w.Handle].Width)).ToList();
-        var columnWidths = LayoutMath.Allocate(area.Width, gap, columnMins, floors.Width);
-        if (columnWidths == null)
-        {
-            return null;
-        }
-
-        var result = new List<WindowRect>(windows.Count);
-        var x = area.Left;
-
-        for (var column = 0; column < slices.Count; column++)
-        {
-            var slice = slices[column];
-            var sizes = LayoutMath.Allocate(
-                area.Height, gap, slice.Select(w => limits[w.Handle].Height).ToList(), floors.Height);
-            if (sizes == null)
-            {
-                return null;
-            }
-
-            var y = area.Top;
-            for (var i = 0; i < slice.Count; i++)
-            {
-                result.Add(new WindowRect(x, y, columnWidths[column], sizes[i]));
-                y += sizes[i] + gap;
-            }
-
-            x += columnWidths[column] + gap;
-        }
-
-        if (slices.Count > 1)
-        {
-            note = $"分 {slices.Count} 列";
-        }
-
-        return result;
-    }
-
     /// <summary>
-    /// 网格平铺：主窗 + 环绕的马赛克构图，几何和分区模式共用（逐像素一致）。
-    /// 默认按调用方给的顺序（前台优先）当主窗；用户在弹窗里确认"把某个窗口放到主窗"时，
-    /// 通过 <paramref name="preferredMain"/> 把它排到第一个，再按马赛克排。
-    /// 任何一格装不下该窗口声明的最小尺寸就返回 null，交给上层弹窗（放主窗 / 最小化 / 层叠 / 放弃），
-    /// 不擅自换成"均分竖条"那种和网格无关的排法。
+    /// 一次性布局的矩形来源：与工作区共用 <see cref="ZoneWorkspace"/>（切分树 + 最小尺寸拟合），
+    /// 不再保留“按最小尺寸均分 / 自动分行分列”的第二套算法。任一格小于窗口声明的最小尺寸
+    /// 就返回 null，交给外层原有的“最小化 / 换主窗 / 层叠”提示逻辑。
+    /// <paramref name="preferredMain"/> 只用于网格的“主窗槽位”，其它布局用前台窗口当主窗。
     /// </summary>
-    private static List<WindowRect>? Grid(
-        List<WindowInfo> windows, WindowRect area, int gap,
+    private static List<WindowRect>? ZoneLayout(
+        LayoutKind kind, List<WindowInfo> windows, WindowRect area, int gap,
         Dictionary<IntPtr, SizeLimits> limits, IntPtr preferredMain, out string? note)
     {
         note = null;
-
         if (windows.Count == 1)
         {
             return new List<WindowRect> { area };
         }
 
-        if (preferredMain != IntPtr.Zero)
+        // FitToMinimumSizes 读的是 WindowInfo 上的最小尺寸；重试时 limits 可能被系统实际撑大，
+        // 这里用快照副本把两者合并，保证一次性布局和工作区按同一份最小尺寸拟合。
+        var effective = windows.Select(w => WithLimits(w, limits[w.Handle])).ToList();
+        var ordered = effective;
+        var pinned = kind == LayoutKind.Grid && preferredMain != IntPtr.Zero
+            ? effective.FirstOrDefault(w => w.Handle == preferredMain)
+            : null;
+
+        if (pinned != null)
         {
-            var pinned = windows.FirstOrDefault(w => w.Handle == preferredMain);
-            if (pinned != null)
-            {
-                var ordered = new List<WindowInfo>(windows.Count) { pinned };
-                ordered.AddRange(windows.Where(w => w.Handle != preferredMain));
-
-                if (!TryMosaic(ordered, area, gap, limits, out var pinnedRects))
-                {
-                    return null;
-                }
-
-                note = $"「{pinned.Title}」已放到主窗";
-                return MapBack(windows, ordered, pinnedRects);
-            }
+            ordered = new List<WindowInfo>(effective.Count) { pinned };
+            ordered.AddRange(effective.Where(w => w.Handle != preferredMain));
+            note = $"「{pinned.Title}」已放到主窗";
         }
 
-        return TryMosaic(windows, area, gap, limits, out var rects) ? rects : null;
-    }
+        var workspace = kind == LayoutKind.Grid
+            ? ZoneWorkspace.PlanGrid(ordered, area, gap) ?? ZoneWorkspace.Create(LayoutKind.Grid, ordered, area, gap)
+            : ZoneWorkspace.Create(kind, ordered, area, gap);
+        workspace.FitToMinimumSizes();
 
-    /// <summary>按马赛克构排放一次；任何一格装不下该窗口声明的最小尺寸就整体失败。</summary>
-    private static bool TryMosaic(
-        List<WindowInfo> ordered, WindowRect area, int gap,
-        Dictionary<IntPtr, SizeLimits> limits, out List<WindowRect> rects)
-    {
-        var planned = ZoneWorkspace.PlanGrid(ordered, area, gap);
-        var mosaic = (planned ?? ZoneWorkspace.Create(LayoutKind.Grid, ordered, area, gap)).Compute();
-        var byHandle = new Dictionary<IntPtr, WindowRect>(mosaic.Count);
-        foreach (var placement in mosaic)
-        {
-            byHandle[placement.Window.Handle] = placement.Rect;
-        }
-
-        rects = new List<WindowRect>(ordered.Count);
-        foreach (var window in ordered)
+        var byHandle = workspace.Compute().ToDictionary(p => p.Window.Handle, p => p.Rect);
+        var rects = new List<WindowRect>(windows.Count);
+        foreach (var window in windows)
         {
             if (!byHandle.TryGetValue(window.Handle, out var rect) ||
                 rect.Width < Math.Max(limits[window.Handle].Width, MinWidth) ||
                 rect.Height < Math.Max(limits[window.Handle].Height, MinHeight))
             {
-                rects = new List<WindowRect>();
-                return false;
+                return null;
             }
 
             rects.Add(rect);
         }
 
-        return true;
+        return rects;
     }
 
-    /// <summary>按原来的窗口顺序把矩形映射回去（BuildPlan 用同一个 ordered 列表配对）。</summary>
-    private static List<WindowRect> MapBack(
-        List<WindowInfo> windows, List<WindowInfo> ordered, List<WindowRect> orderedRects)
+    /// <summary>把系统实际的最小尺寸合并进窗口快照，供 <see cref="ZoneWorkspace"/> 拟合。</summary>
+    private static WindowInfo WithLimits(WindowInfo window, SizeLimits limits) => new()
     {
-        var byHandle = new Dictionary<IntPtr, WindowRect>(ordered.Count);
-        for (var i = 0; i < ordered.Count; i++)
-        {
-            byHandle[ordered[i].Handle] = orderedRects[i];
-        }
-
-        return windows.Select(w => byHandle[w.Handle]).ToList();
-    }
+        Handle = window.Handle,
+        Title = window.Title,
+        ClassName = window.ClassName,
+        ProcessId = window.ProcessId,
+        Bounds = window.Bounds,
+        IsMaximized = window.IsMaximized,
+        Monitor = window.Monitor,
+        MinWidth = Math.Max(window.MinWidth, limits.Width),
+        MinHeight = Math.Max(window.MinHeight, limits.Height),
+        Dpi = window.Dpi,
+        CannotMove = window.CannotMove,
+    };
 
     /// <summary>窗口"声明的最小尺寸"面积，用来决定谁更该占主窗。</summary>
     private static long RequiredArea(WindowInfo window, Dictionary<IntPtr, SizeLimits> limits)
     {
         var limit = limits[window.Handle];
         return (long)Math.Max(limit.Width, MinWidth) * Math.Max(limit.Height, MinHeight);
-    }
-
-    private static List<WindowRect>? MainLeft(
-        List<WindowInfo> windows, WindowRect area, int gap,
-        Dictionary<IntPtr, SizeLimits> limits, Floors floors)
-    {
-        if (windows.Count == 1)
-        {
-            return new List<WindowRect> { area };
-        }
-
-        var left = windows[0];
-        var rest = windows.Skip(1).ToList();
-        var leftMin = Math.Max(limits[left.Handle].Width, floors.Width);
-        var restWidest = rest.Max(w => limits[w.Handle].Width);
-
-        var leftWidth = Math.Max(leftMin, (area.Width - gap) * 55 / 100);
-        if (area.Width - gap - leftWidth < restWidest)
-        {
-            leftWidth = area.Width - gap - restWidest;
-        }
-
-        if (leftWidth < leftMin || area.Width - gap - leftWidth < floors.Width)
-        {
-            return null;
-        }
-
-        var heights = LayoutMath.Allocate(
-            area.Height, gap, rest.Select(w => limits[w.Handle].Height).ToList(), floors.Height);
-        if (heights == null)
-        {
-            return null;
-        }
-
-        var result = new List<WindowRect>(windows.Count)
-        {
-            new(area.Left, area.Top, leftWidth, area.Height),
-        };
-
-        var x = area.Left + leftWidth + gap;
-        var width = area.Width - leftWidth - gap;
-        var y = area.Top;
-
-        for (var i = 0; i < rest.Count; i++)
-        {
-            result.Add(new WindowRect(x, y, width, heights[i]));
-            y += heights[i] + gap;
-        }
-
-        return result;
-    }
-
-    private static List<List<WindowInfo>> Slice(List<WindowInfo> windows, int perSlice)
-    {
-        var slices = new List<List<WindowInfo>>();
-        for (var i = 0; i < windows.Count; i += perSlice)
-        {
-            slices.Add(windows.GetRange(i, Math.Min(perSlice, windows.Count - i)));
-        }
-
-        return slices;
     }
 
     // ---------------- 执行 ----------------
@@ -1211,8 +1037,6 @@ public sealed class LayoutService
     // ---------------- 内部类型 ----------------
 
     private readonly record struct SizeLimits(int Width, int Height);
-
-    private readonly record struct Floors(int Width, int Height);
 
     private readonly record struct WindowMargins(int Left, int Top, int Right, int Bottom);
 

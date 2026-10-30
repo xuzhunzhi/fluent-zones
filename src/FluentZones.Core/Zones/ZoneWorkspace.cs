@@ -19,6 +19,19 @@ public sealed class ZoneWorkspace
 
     public int Gap { get; private set; }
 
+    /// <summary>
+    /// 分区可用区域四边留给窗口边框的边距。一次性布局与工作区必须用同一份区域，
+    /// 否则同一个布局“进工作区前 / 进工作区后”的分隔线会差几个像素。
+    /// </summary>
+    public const int ZoneMargin = 4;
+
+    /// <summary>把显示器工作区收成分区可用区域（四边内缩 <see cref="ZoneMargin"/>，至少 80px）。</summary>
+    public static WindowRect InsetArea(WindowRect workArea) => new(
+        workArea.Left + ZoneMargin,
+        workArea.Top + ZoneMargin,
+        Math.Max(workArea.Width - ZoneMargin * 2, 80),
+        Math.Max(workArea.Height - ZoneMargin * 2, 80));
+
     /// <summary>拖拽时临时改窗口间隙（0 = 两扇窗贴边，边框合成一条）。</summary>
     public void SetGap(int gap) => Gap = Math.Max(0, gap);
 

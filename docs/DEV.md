@@ -14,7 +14,7 @@
 ### C# 侧
 
 - `dotnet build`（只编译，不运行）；
-- 单元测试 / 控制台工具：逻辑写进 `LayoutMath`、`ZoneWorkspace` 这类纯函数，用测试工程跑；
+- 单元测试 / 控制台工具：逻辑写进 `ZoneWorkspace` 这类纯函数，用测试工程跑；
 - 需要读真实窗口信息时只读（`EnumWindows`、`GetWindowRect`），不改动。
 
 ### HTML 原型

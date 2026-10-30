@@ -46,9 +46,6 @@ public sealed partial class MainWindow : Window
     // 这里只保留开关、窗口的收集/摆放、状态栏、对话框、卡片高亮和快照这些 UI 胶水。
     private readonly ZoneSession _zones;
 
-    // 分区模式的边框：由 DWM 画在窗口自己身上；间隙与一次性布局共用设置里的「窗口间距」
-    private const int ZoneMargin = 4;
-
     private enum StatusLevel
     {
         Info,
@@ -1688,16 +1685,11 @@ public sealed partial class MainWindow : Window
         UpdateToggleText(ZoneStateText, ZoneToggle);
     }
 
-    /// <summary>工作区里窗口的可用区域：四边留出画边框的边距。</summary>
-    private WindowRect ZoneArea(IntPtr monitor)
-    {
-        var area = _layouts.GetMonitorArea(monitor);
-        return new WindowRect(
-            area.Left + ZoneMargin,
-            area.Top + ZoneMargin,
-            Math.Max(area.Width - ZoneMargin * 2, 80),
-            Math.Max(area.Height - ZoneMargin * 2, 80));
-    }
+    /// <summary>
+    /// 工作区里窗口的可用区域：四边留出画边框的边距（内缩量在 Core 的
+    /// <see cref="ZoneWorkspace.InsetArea"/> 里，一次性布局用同一份）。
+    /// </summary>
+    private WindowRect ZoneArea(IntPtr monitor) => _layouts.GetMonitorArea(monitor);
 
     private async Task<bool> AskZoneOverflowAsync(int victims, IReadOnlyList<WindowInfo> newcomers)
     {
