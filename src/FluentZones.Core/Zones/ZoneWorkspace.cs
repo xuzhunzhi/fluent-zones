@@ -91,6 +91,18 @@ public sealed class ZoneWorkspace
                 true, ZoneNode.Leaf(windows[0]), ZoneNode.Leaf(windows[1]), MainRatio);
         }
 
+        // 4 个窗口 = 田：竖缝是同一个节点、贯穿上下两行（拖下段的缝，上段跟着动），
+        // 两列各自再横切一刀，横缝同高。
+        if (count == 4)
+        {
+            var leftColumn = ZoneNode.Split(
+                false, ZoneNode.Leaf(windows[0]), ZoneNode.Leaf(windows[2]), MainRatio);
+            var rightColumn = ZoneNode.Split(
+                false, ZoneNode.Leaf(windows[1]), ZoneNode.Leaf(windows[3]), MainRatio);
+
+            return ZoneNode.Split(true, leftColumn, rightColumn, MainRatio);
+        }
+
         // 除主窗外的 count-1 个格子：一半放右侧列，一半放底部行，余数给底部
         var rightCount = (count - 1) / 2;
         var top = ZoneNode.Split(
