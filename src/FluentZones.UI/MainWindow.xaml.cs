@@ -1657,7 +1657,7 @@ public sealed partial class MainWindow : Window
 
             var area = ZoneArea(monitor);
             var effective = kind ?? (windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid);
-            var workspace = ZoneWorkspace.Create(effective, windows, area, ZoneMinGap);
+            var workspace = CreateZoneWorkspace(effective, windows, area, ZoneMinGap);
 
             // 只记第一次进入前的窗口位置：Ctrl+Alt+0 永远回到非工作区状态
             if (_zoneWorkspace == null)
@@ -1875,7 +1875,7 @@ public sealed partial class MainWindow : Window
 
             while (true)
             {
-                var workspace = ZoneWorkspace.Create(_zoneLayoutKind, candidates, area, gap);
+                var workspace = CreateZoneWorkspace(_zoneLayoutKind, candidates, area, gap);
                 if (ZoneFits(workspace))
                 {
                     _zoneWorkspace = workspace;
@@ -1899,7 +1899,7 @@ public sealed partial class MainWindow : Window
                 {
                     var drop = removable.Take(k).ToList();
                     var subset = candidates.Where(w => !drop.Contains(w)).ToList();
-                    var attempt = ZoneWorkspace.Create(_zoneLayoutKind, subset, area, gap);
+                    var attempt = CreateZoneWorkspace(_zoneLayoutKind, subset, area, gap);
                     if (ZoneFits(attempt))
                     {
                         victims = drop;
@@ -1949,6 +1949,95 @@ public sealed partial class MainWindow : Window
             area.Top + ZoneMargin,
             Math.Max(area.Width - ZoneMargin * 2, 80),
             Math.Max(area.Height - ZoneMargin * 2, 80));
+    }
+
+    /// <summary>
+    /// 4 个窗口时用「左右两个日」：左上主窗 62×62、左下副主窗 62×38、右列上下各 50。
+    /// 枚举 4 个窗口到 4 个格子的分配，挑一个所有窗口声明的最小尺寸都放得下的；
+    /// 左下高度不够时可在 50% 以内加高（不超过 50%）。
+    /// </summary>
+    private ZoneWorkspace CreateZoneWorkspace(
+        LayoutKind kind, List<WindowInfo> windows, WindowRect area, int gap)
+    {
+        if (windows.Count == 4)
+        {
+            var twoRows = TryCreateTwoRows(windows, area, gap);
+            if (twoRows != null)
+            {
+                return twoRows;
+            }
+        }
+
+        return ZoneWorkspace.Create(kind, windows, area, gap);
+    }
+
+    private ZoneWorkspace? TryCreateTwoRows(List<WindowInfo> windows, WindowRect area, int gap)
+    {
+        // 顺序是 [左上, 右上, 左下, 右下]；自然顺序：主窗=第 1 个，副主窗=第 2 个
+        var natural = new[] { 0, 2, 1, 3 };
+        var orders = Permutations(new[] { 0, 1, 2, 3 })
+            .OrderByDescending(p => p.SequenceEqual(natural))
+            .ToList();
+
+        var usableW = area.Width - gap;
+        var leftW = (int)Math.Round(usableW * 0.62);
+        var rightW = usableW - leftW;
+        var usableH = area.Height - gap;
+        var maxBottom = (int)Math.Floor(usableH * 0.5);
+
+        foreach (var order in orders)
+        {
+            var lt = windows[order[0]];
+            var rt = windows[order[1]];
+            var lb = windows[order[2]];
+            var rb = windows[order[3]];
+
+            if (leftW < lt.MinWidth || leftW < lb.MinWidth ||
+                rightW < rt.MinWidth || rightW < rb.MinWidth)
+            {
+                continue;
+            }
+
+            // 左下可以长高（≤50%），把副主窗的最小高度塞进去
+            var bottom = Math.Max((int)Math.Round(usableH * 0.38), lb.MinHeight);
+            bottom = Math.Min(bottom, maxBottom);
+            var top = usableH - bottom;
+            var half = usableH / 2;
+
+            if (top < lt.MinHeight || bottom < lb.MinHeight ||
+                half < rt.MinHeight || half < rb.MinHeight)
+            {
+                continue;
+            }
+
+            return ZoneWorkspace.CreateTwoRows(
+                new[] { lt, rt, lb, rb }, area, gap, (double)top / usableH);
+        }
+
+        return null;
+    }
+
+    private static List<int[]> Permutations(int[] items)
+    {
+        var result = new List<int[]>();
+        void Walk(int index)
+        {
+            if (index == items.Length)
+            {
+                result.Add((int[])items.Clone());
+                return;
+            }
+
+            for (var i = index; i < items.Length; i++)
+            {
+                (items[index], items[i]) = (items[i], items[index]);
+                Walk(index + 1);
+                (items[index], items[i]) = (items[i], items[index]);
+            }
+        }
+
+        Walk(0);
+        return result;
     }
 
     private async Task<bool> AskZoneOverflowAsync(int victims, IReadOnlyList<WindowInfo> newcomers)

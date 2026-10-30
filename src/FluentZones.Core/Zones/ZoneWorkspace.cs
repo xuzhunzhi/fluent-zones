@@ -121,6 +121,26 @@ public sealed class ZoneWorkspace
         return ZoneNode.Split(false, top, bottom, MainRatio);
     }
 
+    /// <summary>
+    /// 4 窗口的「左右两个日」：左列 62% 宽（上主窗 / 下副主窗），右列 38% 宽（上下平分）。
+    /// 参数顺序是 [左上, 右上, 左下, 右下]；leftTopRatio 是左列上格占（高度-间隙）的比例。
+    /// </summary>
+    public static ZoneWorkspace CreateTwoRows(
+        IReadOnlyList<WindowInfo> windows, WindowRect area, int gap, double leftTopRatio)
+    {
+        if (windows.Count != 4)
+        {
+            throw new ArgumentException("需要正好 4 个窗口", nameof(windows));
+        }
+
+        var left = ZoneNode.Split(
+            false, ZoneNode.Leaf(windows[0]), ZoneNode.Leaf(windows[2]), leftTopRatio);
+        var right = ZoneNode.Split(
+            false, ZoneNode.Leaf(windows[1]), ZoneNode.Leaf(windows[3]), 0.5);
+
+        return new ZoneWorkspace(ZoneNode.Split(true, left, right, 0.62), area, gap);
+    }
+
     /// <summary>算出每个窗口的目标矩形（可见边框）。</summary>
     public List<ZonePlacement> Compute()
     {
