@@ -779,14 +779,32 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (child is UIElement element)
+        // 弹层卡片、列表项各自都有转场（淡出/位移/入场），收起时会各动各的；
+        // 全部清掉，卡片和文字作为一个整体即时收起。
+        ClearTransitions(child);
+    }
+
+    private static void ClearTransitions(DependencyObject root)
+    {
+        if (root is UIElement element)
         {
             element.Transitions = null;
         }
 
-        if (child is Panel panel)
+        if (root is Panel panel)
         {
             panel.ChildrenTransitions = null;
+        }
+
+        if (root is ItemsControl items)
+        {
+            items.ItemContainerTransitions = null;
+        }
+
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            ClearTransitions(VisualTreeHelper.GetChild(root, i));
         }
     }
 
