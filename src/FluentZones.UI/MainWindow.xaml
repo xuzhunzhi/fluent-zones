@@ -20,15 +20,14 @@
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
                 <Grid Width="16" Height="16" VerticalAlignment="Center">
-                    <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5"
+                    <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="0,0,0,0"
                                HorizontalAlignment="Left" VerticalAlignment="Top"
                                Stroke="{ThemeResource TextFillColorTertiaryBrush}" StrokeThickness="1" />
                     <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="3,3,0,0"
                                HorizontalAlignment="Left" VerticalAlignment="Top"
-                               Stroke="{ThemeResource TextFillColorSecondaryBrush}" StrokeThickness="1" />
+                               Stroke="#4A5B72" StrokeThickness="1" />
                     <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="6,6,0,0"
                                HorizontalAlignment="Left" VerticalAlignment="Top"
-                               Fill="{ThemeResource AccentFillColorDefaultBrush}"
                                Stroke="{ThemeResource AccentFillColorDefaultBrush}" StrokeThickness="1" />
                 </Grid>
                 <TextBlock Text="Fluent Zones" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="14" />
