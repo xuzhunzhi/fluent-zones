@@ -58,6 +58,9 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
 
+        // 下拉菜单收起时默认带淡出/位移动画，看着拖泥带水：去掉 ComboBox 弹层动画
+        AttachInstantPopup(ScopeCombo);
+
         // 上次被强杀 / 崩溃时可能没恢复窗口边框，启动时先补回来
         ZoneStyleStore.RestoreAll();
         ZoneStyleStore.RepairFromLog();
@@ -453,6 +456,7 @@ public sealed partial class MainWindow : Window
             combo.Items.Add("3 列");
             combo.Items.Add("4 列");
             combo.SelectedIndex = _settings.ColumnsLimit == AppSettings.ColumnsLimitMin ? 0 : 1;
+            AttachInstantPopup(combo);
 
             var content = new StackPanel { Spacing = 12, MinWidth = 340 };
             content.Children.Add(new TextBlock
@@ -753,6 +757,58 @@ public sealed partial class MainWindow : Window
         UpdateStatus(
             "作用范围：" + (_settings.Scope == LayoutScope.AllMonitors ? "所有显示器" : "鼠标所在显示器"),
             StatusLevel.Info);
+    }
+
+    /// <summary>
+    /// ComboBox 的下拉弹层默认带 PopupThemeTransition（淡出 + 位移），收起时看着拖泥带水。
+    /// 这里把模板里 Popup 的转场去掉，让展开/收起即时完成。
+    /// </summary>
+    private static void AttachInstantPopup(ComboBox combo)
+    {
+        combo.Loaded += (_, _) => DisablePopupAnimations(combo);
+        combo.DropDownOpened += (_, _) => DisablePopupAnimations(combo);
+    }
+
+    private static void DisablePopupAnimations(ComboBox combo)
+    {
+        combo.ApplyTemplate();
+
+        var popup = FindPopup(combo);
+        if (popup?.Child is not DependencyObject child)
+        {
+            return;
+        }
+
+        if (child is UIElement element)
+        {
+            element.Transitions = null;
+        }
+
+        if (child is Panel panel)
+        {
+            panel.ChildrenTransitions = null;
+        }
+    }
+
+    private static Popup? FindPopup(DependencyObject root)
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is Popup popup)
+            {
+                return popup;
+            }
+
+            var nested = FindPopup(child);
+            if (nested != null)
+            {
+                return nested;
+            }
+        }
+
+        return null;
     }
 
     private void StartupToggle_Toggled(object sender, RoutedEventArgs e)
