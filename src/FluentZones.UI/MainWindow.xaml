@@ -19,8 +19,7 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
-                <FontIcon Glyph="&#xE8A9;" FontSize="16" VerticalAlignment="Center"
-                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                <Image Source="Assets/titlebar.png" Width="16" Height="16" VerticalAlignment="Center" />
                 <TextBlock Text="Fluent Zones" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="14" />
                 <TextBlock Text="窗口布局" Style="{StaticResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" />
