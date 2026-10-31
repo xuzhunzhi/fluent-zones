@@ -22,12 +22,15 @@
                 <Grid Width="16" Height="16" VerticalAlignment="Center">
                     <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="0,0,0,0"
                                HorizontalAlignment="Left" VerticalAlignment="Top"
+                               Fill="#DCE8F7"
                                Stroke="{ThemeResource TextFillColorTertiaryBrush}" StrokeThickness="1" />
                     <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="3,3,0,0"
                                HorizontalAlignment="Left" VerticalAlignment="Top"
-                               Stroke="#4A5B72" StrokeThickness="1" />
+                               Fill="#4A5B72"
+                               Stroke="#37455A" StrokeThickness="1" />
                     <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="6,6,0,0"
                                HorizontalAlignment="Left" VerticalAlignment="Top"
+                               Fill="Transparent"
                                Stroke="{ThemeResource AccentFillColorDefaultBrush}" StrokeThickness="1" />
                 </Grid>
                 <TextBlock Text="Fluent Zones" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="14" />
