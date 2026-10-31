@@ -23,15 +23,17 @@
                     <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="0,0,0,0"
                                HorizontalAlignment="Left" VerticalAlignment="Top"
                                Fill="Transparent"
-                               Stroke="{ThemeResource TextFillColorTertiaryBrush}" StrokeThickness="1" />
-                    <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="3,3,0,0"
-                               HorizontalAlignment="Left" VerticalAlignment="Top"
-                               Fill="#4A5B72"
-                               Stroke="#37455A" StrokeThickness="1" />
-                    <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="6,6,0,0"
-                               HorizontalAlignment="Left" VerticalAlignment="Top"
-                               Fill="{ThemeResource AccentFillColorDefaultBrush}"
                                Stroke="#1C2B44" StrokeThickness="1" />
+                    <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="2,2,0,0"
+                               HorizontalAlignment="Left" VerticalAlignment="Top"
+                               Fill="#8A8A8A"
+                               Stroke="#1C2B44" StrokeThickness="1" />
+                    <Rectangle Width="11" Height="9" RadiusX="2" RadiusY="2" Margin="4,4,0,0"
+                               HorizontalAlignment="Left" VerticalAlignment="Top"
+                               Fill="#FFFFFF" />
+                    <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="5,5,0,0"
+                               HorizontalAlignment="Left" VerticalAlignment="Top"
+                               Fill="{ThemeResource AccentFillColorDefaultBrush}" />
                 </Grid>
                 <TextBlock Text="Fluent Zones" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="14" />
                 <TextBlock Text="窗口布局" Style="{StaticResource CaptionTextBlockStyle}"
