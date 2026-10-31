@@ -19,22 +19,8 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
-                <Grid Width="16" Height="16" VerticalAlignment="Center">
-                    <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="0,0,0,0"
-                               HorizontalAlignment="Left" VerticalAlignment="Top"
-                               Fill="Transparent"
-                               Stroke="#1C2B44" StrokeThickness="1" />
-                    <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="2,2,0,0"
-                               HorizontalAlignment="Left" VerticalAlignment="Top"
-                               Fill="#8A8A8A"
-                               Stroke="#1C2B44" StrokeThickness="1" />
-                    <Rectangle Width="11" Height="9" RadiusX="2" RadiusY="2" Margin="4,4,0,0"
-                               HorizontalAlignment="Left" VerticalAlignment="Top"
-                               Fill="#FFFFFF" />
-                    <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="5,5,0,0"
-                               HorizontalAlignment="Left" VerticalAlignment="Top"
-                               Fill="{ThemeResource AccentFillColorDefaultBrush}" />
-                </Grid>
+                <FontIcon Glyph="&#xE8A9;" FontSize="16" VerticalAlignment="Center"
+                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                 <TextBlock Text="Fluent Zones" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="14" />
                 <TextBlock Text="窗口布局" Style="{StaticResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" />
