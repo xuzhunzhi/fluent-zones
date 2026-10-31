@@ -75,6 +75,12 @@ public static class WindowCollector
             return null;
         }
 
+        // 卡死（未响应）的窗口不要碰：读标题、取最小尺寸都可能把调用方一起拖住
+        if (NativeMethods.IsHungAppWindow(hWnd))
+        {
+            return null;
+        }
+
         NativeMethods.GetWindowThreadProcessId(hWnd, out var pid);
         if (pid == ownPid || IsExcludedProcess(pid))
         {

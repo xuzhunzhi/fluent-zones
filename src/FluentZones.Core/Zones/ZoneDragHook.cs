@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace FluentZones.Core;
 
@@ -108,7 +109,10 @@ public sealed class ZoneDragHook : IDisposable
             if (message == NativeMethods.WM_LBUTTONDOWN)
             {
                 var node = FindDivider(info.pt.X, info.pt.Y);
-                if (node != null)
+
+                // 只有落在窗口之间的缝隙里才抢点击；落在窗口本身（标题栏、关闭按钮、客户区）一律放行，
+                // 否则会把别的窗口的点击吃掉，甚至让它停在“按下了但没收到松开”的状态。
+                if (node != null && !IsOverWindow(info.pt.X, info.pt.Y))
                 {
                     lock (_gate)
                     {
@@ -142,7 +146,7 @@ public sealed class ZoneDragHook : IDisposable
                 }
 
                 var hover = FindDivider(info.pt.X, info.pt.Y);
-                if (hover != null)
+                if (hover != null && !IsOverWindow(info.pt.X, info.pt.Y))
                 {
                     SetCursor(horizontal: hover.Horizontal);
                 }
@@ -174,8 +178,46 @@ public sealed class ZoneDragHook : IDisposable
             IntPtr.Zero,
             horizontal ? NativeMethods.IDC_SIZEWE : NativeMethods.IDC_SIZENS));
 
-    private ZoneNode? FindDivider(int x, int y)
+    /// <summary>
+    /// 点是否落在一个可见窗口的矩形里（桌面/任务栏不算）。落在窗口里时不能抢点击，
+    /// 否则标题栏按钮、窗口拖动都会被钩子吃掉。
+    /// </summary>
+    private static bool IsOverWindow(int x, int y)
     {
+        var hwnd = NativeMethods.WindowFromPoint(new NativeMethods.POINT { X = x, Y = y });
+        if (hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var root = NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT);
+        if (root == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var className = new StringBuilder(64);
+        NativeMethods.GetClassName(root, className, className.Capacity);
+        var cls = className.ToString();
+        if (cls is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd")
+        {
+            return false;
+        }
+
+        var size = Marshal.SizeOf<NativeMethods.RECT>();
+        if (NativeMethods.DwmGetWindowAttribute(
+                root, NativeMethods.DWMWA_EXTENDED_FRAME_BOUNDS, out var frame, size) == 0)
+        {
+            return x >= frame.Left - 1 && x < frame.Right + 1 &&
+                   y >= frame.Top - 1 && y < frame.Bottom + 1;
+        }
+
+        return NativeMethods.GetWindowRect(root, out var rect) &&
+               x >= rect.Left - 1 && x < rect.Right + 1 &&
+               y >= rect.Top - 1 && y < rect.Bottom + 1;
+    }
+
+    private ZoneNode? FindDivider(int x, int y)    {
         ZoneWorkspace? ws;
         lock (_gate)
         {

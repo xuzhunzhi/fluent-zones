@@ -281,6 +281,17 @@ internal static class NativeMethods
     internal static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
     [DllImport("user32.dll")]
+    internal static extern IntPtr WindowFromPoint(POINT point);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
+
+    internal const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll")]
+    internal static extern bool IsHungAppWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
     internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
