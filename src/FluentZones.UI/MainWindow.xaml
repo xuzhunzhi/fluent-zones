@@ -31,7 +31,7 @@
                     <Rectangle Width="9" Height="7" RadiusX="1.5" RadiusY="1.5" Margin="6,6,0,0"
                                HorizontalAlignment="Left" VerticalAlignment="Top"
                                Fill="{ThemeResource AccentFillColorDefaultBrush}"
-                               Stroke="{ThemeResource AccentFillColorDefaultBrush}" StrokeThickness="1" />
+                               Stroke="#F2F6FC" StrokeThickness="1" />
                 </Grid>
                 <TextBlock Text="Fluent Zones" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="14" />
                 <TextBlock Text="窗口布局" Style="{StaticResource CaptionTextBlockStyle}"
