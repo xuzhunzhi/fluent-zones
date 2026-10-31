@@ -54,12 +54,16 @@ public sealed partial class MainWindow : Window
         Error,
     }
 
+    private readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(2.8) };
+
     public MainWindow()
     {
         InitializeComponent();
 
         // 下拉菜单收起时默认带淡出/位移动画，看着拖泥带水：去掉 ComboBox 弹层动画
         AttachInstantPopup(ScopeCombo);
+
+        _toastTimer.Tick += (_, _) => HideToast();
 
         // 上次被强杀 / 崩溃时可能没恢复窗口边框，启动时先补回来
         ZoneStyleStore.RestoreAll();
@@ -1883,9 +1887,9 @@ public sealed partial class MainWindow : Window
 
     private void UpdateStatus(string message, StatusLevel level)
     {
-        StatusText.Text = message;
+        ToastText.Text = message;
 
-        StatusIcon.Glyph = level switch
+        ToastIcon.Glyph = level switch
         {
             StatusLevel.Success => "\uE73E",
             StatusLevel.Warn => "\uE7BA",
@@ -1901,7 +1905,49 @@ public sealed partial class MainWindow : Window
             _ => "TextFillColorSecondaryBrush",
         };
 
-        StatusIcon.Foreground = (Brush)Application.Current.Resources[brushKey];
+        ToastIcon.Foreground = (Brush)Application.Current.Resources[brushKey];
+        ShowToast();
+    }
+
+    private void ShowToast()
+    {
+        _toastTimer.Stop();
+        Toast.Visibility = Visibility.Visible;
+        Toast.Opacity = 0;
+
+        var fade = new Storyboard();
+        var animation = new DoubleAnimation
+        {
+            From = 0,
+            To = 1,
+            Duration = TimeSpan.FromMilliseconds(120),
+            EnableDependentAnimation = true,
+        };
+        Storyboard.SetTarget(animation, Toast);
+        Storyboard.SetTargetProperty(animation, "Opacity");
+        fade.Children.Add(animation);
+        fade.Begin();
+
+        _toastTimer.Start();
+    }
+
+    private void HideToast()
+    {
+        _toastTimer.Stop();
+
+        var fade = new Storyboard();
+        var animation = new DoubleAnimation
+        {
+            From = Toast.Opacity,
+            To = 0,
+            Duration = TimeSpan.FromMilliseconds(150),
+            EnableDependentAnimation = true,
+        };
+        Storyboard.SetTarget(animation, Toast);
+        Storyboard.SetTargetProperty(animation, "Opacity");
+        fade.Children.Add(animation);
+        fade.Completed += (_, _) => Toast.Visibility = Visibility.Collapsed;
+        fade.Begin();
     }
 
     // ---------------- 小工具 ----------------

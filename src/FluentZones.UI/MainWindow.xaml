@@ -10,7 +10,6 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!-- 自绘标题栏 -->
@@ -318,15 +317,21 @@
         </ScrollViewer>
         </NavigationView>
 
-        <!-- 状态栏 -->
-        <Border Grid.Row="2" Padding="16,8" BorderThickness="0,1,0,0"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <FontIcon x:Name="StatusIcon" FontSize="13" Glyph="&#xE946;" VerticalAlignment="Center"
-                          Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <TextBlock x:Name="StatusText" Text="正在启动…" VerticalAlignment="Center"
+        <!-- 状态提示：底部浮层 toast，几秒后自动消失 -->
+        <Border x:Name="Toast" Grid.Row="0" Grid.RowSpan="2"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                Margin="24,0,24,28" Padding="16,10" CornerRadius="8"
+                Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"
+                Visibility="Collapsed" Opacity="0" IsHitTestVisible="False">
+            <Border.Shadow>
+                <ThemeShadow />
+            </Border.Shadow>
+            <StackPanel Orientation="Horizontal" Spacing="8" MaxWidth="720">
+                <FontIcon x:Name="ToastIcon" FontSize="13" Glyph="&#xE946;" VerticalAlignment="Center" />
+                <TextBlock x:Name="ToastText" Text="正在启动…" VerticalAlignment="Center"
                            Style="{StaticResource CaptionTextBlockStyle}"
-                           TextWrapping="Wrap" MaxLines="2" />
+                           TextWrapping="Wrap" MaxLines="3" />
             </StackPanel>
         </Border>
     </Grid>
