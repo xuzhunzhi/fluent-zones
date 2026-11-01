@@ -101,22 +101,11 @@ public static class ZoneStyleStore
                 }
 
                 var lines = File.ReadAllLines(logPath);
-                var start = -1;
-                for (var i = lines.Length - 1; i >= 0; i--)
-                {
-                    if (lines[i].Contains("zones place", StringComparison.Ordinal))
-                    {
-                        start = i;
-                        break;
-                    }
-                }
+                var seen = new HashSet<long>();
 
-                if (start < 0)
-                {
-                    return;
-                }
-
-                for (var i = start + 1; i < lines.Length; i++)
+                // 扫描**所有** zones place 块（不只是最后一段）：程序被强杀过多次时，
+                // 早先那一轮参与过分区的窗口也可能一直缺着 WS_THICKFRAME。
+                for (var i = 0; i < lines.Length; i++)
                 {
                     var line = lines[i];
                     if (!line.StartsWith("  place 0x", StringComparison.Ordinal))
@@ -129,7 +118,7 @@ public static class ZoneStyleStore
                             line.AsSpan(10, end - 10),
                             NumberStyles.HexNumber,
                             CultureInfo.InvariantCulture,
-                            out var rawHandle))
+                            out var rawHandle) || !seen.Add(rawHandle))
                     {
                         continue;
                     }
