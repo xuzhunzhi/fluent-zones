@@ -31,6 +31,7 @@ public sealed class ZoneSession : IDisposable
     private readonly List<IntPtr> _lastOrder = new();
 
     private ZoneDragHook? _dragHook;
+    private ZoneTitleDragHook? _titleHook;
     private WinEventWatcher? _watcher;
     private bool _syncQueued;
     private bool _swapInProgress;
@@ -93,6 +94,15 @@ public sealed class ZoneSession : IDisposable
     /// 返回 true 才允许换主窗；false / 未设置 = 保持自然主窗，按放不下处理。
     /// </summary>
     public Func<WindowInfo, Task<bool>>? MainSwapRequested { get; set; }
+
+    /// <summary>
+    /// 标题栏拖拽交换需要调分界线（或放不下）：UI 弹统一对话框。
+    /// 返回 true 才应用候选；Impossible 时也应展示（左按钮置灰），返回值不应用。
+    /// </summary>
+    public Func<WindowInfo, WindowInfo, ZoneSwapResult, Task<bool>>? SwapConfirmationRequested { get; set; }
+
+    /// <summary>交换已应用（UI 用来弹 toast）。</summary>
+    public event Action<WindowInfo, WindowInfo, ZoneSwapOutcome>? SwapCompleted;
 
     /// <summary>UI 正在弹对话框：此时不要重排，避免和对话流程打架。</summary>
     public Func<bool>? IsInteractionBusy { get; set; }
@@ -163,6 +173,7 @@ public sealed class ZoneSession : IDisposable
         }
 
         EnsureDragHook().Show(workspace);
+        EnsureTitleHook();
         Apply(workspace);
         StartWatch();
         return true;
@@ -176,6 +187,8 @@ public sealed class ZoneSession : IDisposable
         Close(notifyStatus: false);
         _dragHook?.Dispose();
         _dragHook = null;
+        _titleHook?.Dispose();
+        _titleHook = null;
     }
 
     private void Close(bool notifyStatus)
@@ -185,6 +198,7 @@ public sealed class ZoneSession : IDisposable
         StopWatch();
         RestoreBorders();
         _dragHook?.Hide();
+        _titleHook?.Hide();
         Workspace = null;
         _swapInProgress = false;
         _windowHandles.Clear();
@@ -379,6 +393,87 @@ public sealed class ZoneSession : IDisposable
 
         _dragHook = hook;
         return hook;
+    }
+
+    private void EnsureTitleHook()
+    {
+        if (_titleHook != null)
+        {
+            return;
+        }
+
+        var hook = new ZoneTitleDragHook(() => Workspace);
+        hook.DragStarted += BeginSwap;
+        hook.DragEnded += EndSwap;
+        hook.WindowDropped += OnTitleWindowDropped;
+
+        try
+        {
+            hook.Start();
+            _titleHook = hook;
+        }
+        catch (Exception ex)
+        {
+            hook.Dispose();
+            StatusRequested?.Invoke(
+                "分区模式：标题栏交换不可用（" + ex.Message + "）", ZoneStatusLevel.Warn);
+        }
+    }
+
+    private void OnTitleWindowDropped(WindowInfo source, WindowInfo target)
+    {
+        if (_postToUi == null)
+        {
+            _ = HandleTitleDropAsync(source, target);
+        }
+        else
+        {
+            _postToUi(() => _ = HandleTitleDropAsync(source, target));
+        }
+    }
+
+    private async Task HandleTitleDropAsync(WindowInfo source, WindowInfo target)
+    {
+        var generation = _sessionGeneration;
+        if (Workspace == null)
+        {
+            return;
+        }
+
+        var result = TrySwap(source, target);
+        if (generation != _sessionGeneration || Workspace == null)
+        {
+            return;
+        }
+
+        if (result.Outcome == ZoneSwapOutcome.Impossible)
+        {
+            if (SwapConfirmationRequested != null)
+            {
+                await SwapConfirmationRequested(source, target, result);
+            }
+
+            return;
+        }
+
+        if (result.Outcome == ZoneSwapOutcome.NeedsDividerAdjustment)
+        {
+            if (SwapConfirmationRequested == null)
+            {
+                return;
+            }
+
+            var approved = await SwapConfirmationRequested(source, target, result);
+            if (!approved || generation != _sessionGeneration || Workspace == null)
+            {
+                return;
+            }
+        }
+
+        if (CommitSwap(result))
+        {
+            SwapCompleted?.Invoke(source, target, result.Outcome);
+        }
     }
 
     // ---------------- 窗口事件（新窗口 / 关闭 / 最小化） ----------------

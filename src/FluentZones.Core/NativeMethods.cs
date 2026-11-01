@@ -10,6 +10,7 @@ internal static class NativeMethods
 
     internal const int WS_EX_TOOLWINDOW = 0x00000080;
     internal const int WS_EX_NOACTIVATE = 0x08000000;
+    internal const int WS_EX_TRANSPARENT = 0x00000020;
 
     internal const uint SWP_NOSIZE = 0x0001;
     internal const uint SWP_NOMOVE = 0x0002;
@@ -21,11 +22,15 @@ internal static class NativeMethods
     internal const int SW_SHOWMINNOACTIVE = 7;
     internal const int SW_MAXIMIZE = 3;
     internal const int SW_HIDE = 0;
+    internal const int SW_RESTORE = 9;
 
     internal const uint WS_POPUP = 0x80000000;
     internal const int WS_EX_TOPMOST = 0x00000008;
     internal const int WS_EX_LAYERED = 0x00080000;
     internal const uint LWA_COLORKEY = 0x00000001;
+    internal const uint LWA_ALPHA = 0x00000002;
+    internal const int HTCAPTION = 2;
+    internal const uint PW_RENDERFULLCONTENT = 0x00000002;
 
     internal const int WM_PAINT = 0x000F;
     internal const int WM_SETCURSOR = 0x0020;
@@ -295,6 +300,15 @@ internal static class NativeMethods
     internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
+    internal static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    internal static extern uint GetDoubleClickTime();
+
+    [DllImport("user32.dll")]
+    internal static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint flags);
+
+    [DllImport("user32.dll")]
     internal static extern bool SetWindowPos(
         IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 
@@ -331,6 +345,11 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr SendMessageTimeout(
         IntPtr hWnd, uint msg, IntPtr wParam, ref MINMAXINFO lParam,
+        uint flags, uint timeout, out IntPtr result);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam,
         uint flags, uint timeout, out IntPtr result);
 
     [DllImport("user32.dll")]
@@ -381,6 +400,13 @@ internal static class NativeMethods
 
     [DllImport("gdi32.dll")]
     internal static extern bool DeleteDC(IntPtr hdc);
+
+    internal const uint SRCCOPY = 0x00CC0020;
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool BitBlt(
+        IntPtr hdcDest, int xDest, int yDest, int width, int height,
+        IntPtr hdcSrc, int xSrc, int ySrc, uint rop);
 
     [DllImport("user32.dll")]
     internal static extern IntPtr GetDC(IntPtr hwnd);
