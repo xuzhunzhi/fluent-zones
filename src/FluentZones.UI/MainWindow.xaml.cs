@@ -73,7 +73,7 @@ public sealed partial class MainWindow : Window
 
         // 工作区状态机在 Core：这里只注入「枚举窗口 / 量可用区域 / 取间隙 / 每行列数 / 回 UI 线程」
         _zones = new ZoneSession(
-            collectWindows: () => _layouts.GetWindows(CurrentOptions().Scope),
+            collectWindows: () => _layouts.GetZoneWindows(),
             getArea: ZoneArea,
             getGap: () => CurrentOptions().Gap,
             getColumnsLimit: () => _settings.ColumnsLimit,
@@ -1365,7 +1365,8 @@ public sealed partial class MainWindow : Window
         // 分区能力开启时：选布局 = 按该布局进入工作区（层叠没有可拖的分隔线，仍按一次性排）
         if (kind != LayoutKind.Cascade && (ZoneToggle.IsOn || _zones.IsActive))
         {
-            await EnterZonesAsync(scope, kind);
+            // 分区模式只作用于鼠标所在显示器：Shift/AllMonitors 在 Zone 路径等价于当前屏
+            await EnterZonesAsync(kind);
             return;
         }
 
@@ -1700,32 +1701,23 @@ public sealed partial class MainWindow : Window
     /// <paramref name="kind"/> 为空时按窗口数量自动选（≤3 左右并排，否则网格）。
     /// 这里只做窗口筛选、首次快照和状态栏；切分树 / 边框 / 拖拽 / 窗口事件都在 <see cref="ZoneSession"/>。
     /// </summary>
-    private async Task EnterZonesAsync(LayoutScope scope, LayoutKind? kind = null)
+    private async Task EnterZonesAsync(LayoutKind? kind = null)
     {
         try
         {
-            var all = _layouts.GetWindows(scope);
+            // 分区工作区只作用于鼠标所在显示器：不按 Scope 取窗口，也不跨屏回落
+            var all = _layouts.GetZoneWindows();
+            var monitor = _layouts.GetCursorMonitor();
+            var unmovable = all.Where(w => w.CannotMove && w.Monitor == monitor).ToList();
 
-            // 提权窗口（UIPI）动不了：不要把它算进槽位，否则会留下一个空格子，
-            // 它的对话框还会压在别的分区上（布局模式在 LayoutService 里也是这么排除的）。
-            var unmovable = all.Where(w => w.CannotMove).ToList();
-            var movable = all.Where(w => !w.CannotMove).ToList();
-            if (movable.Count < 2)
+            if (!LayoutService.TryGetZoneWindows(all, monitor, out var windows))
             {
                 UpdateStatus(
                     unmovable.Count > 0
-                        ? "可移动的窗口不足两个：提权窗口需要以管理员身份运行"
-                        : "至少需要两个窗口才能进入分区模式",
+                        ? $"当前显示器上可移动窗口不足两个（有 {unmovable.Count} 个提权窗口无法操作）"
+                        : $"当前显示器上可移动窗口不足两个（{windows.Count} 个）",
                     StatusLevel.Warn);
                 return;
-            }
-
-            var monitor = movable[0].Monitor;
-            var windows = movable.Where(w => w.Monitor == monitor).ToList();
-            if (windows.Count < 2)
-            {
-                windows = movable.ToList();
-                monitor = windows[0].Monitor;
             }
 
             var effective = kind ?? (windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid);
@@ -1742,7 +1734,7 @@ public sealed partial class MainWindow : Window
                 ? $"；无法移动：{string.Join("、", unmovable.Select(w => w.Title))}（管理员权限）"
                 : string.Empty;
             UpdateStatus(
-                $"分区模式（{LayoutNames.Display(effective)}）：拖动分隔线同时调整两侧窗口" +
+                $"分区模式（{LayoutNames.Display(effective)}，鼠标所在显示器）：拖动分隔线同时调整两侧窗口" +
                 $"（{windows.Count} 个），Ctrl+Alt+0 还原并退出{blockedNote}",
                 StatusLevel.Info);
         }
@@ -1806,9 +1798,9 @@ public sealed partial class MainWindow : Window
     /// <summary>把拖拽钩子 / 窗口事件的回调送回 UI 线程（与原来 DispatcherQueue.TryEnqueue 的时序一致）。</summary>
     private void PostToUi(Action action) => DispatcherQueue.TryEnqueue(() => action());
 
-    /// <summary>ZoneSession 的状态栏消息映射到界面的 <see cref="StatusLevel"/>。</summary>
+    /// <summary>ZoneSession 的状态栏消息映射到界面的 <see cref="StatusLevel"/>（标注当前显示器）。</summary>
     private void OnZoneStatus(string message, ZoneStatusLevel level) =>
-        UpdateStatus(message, level switch
+        UpdateStatus("当前显示器：" + message, level switch
         {
             ZoneStatusLevel.Success => StatusLevel.Success,
             ZoneStatusLevel.Warn => StatusLevel.Warn,

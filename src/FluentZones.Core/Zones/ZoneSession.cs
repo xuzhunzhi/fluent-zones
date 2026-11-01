@@ -433,9 +433,7 @@ public sealed class ZoneSession : IDisposable
                 return;
             }
 
-            var windows = _collectWindows()
-                .Where(w => !w.CannotMove && w.Monitor == Monitor)
-                .ToList();
+            var windows = LayoutService.ZoneWindowsOnMonitor(_collectWindows(), Monitor);
 
             // 粘住上一次的槽位分配：窗口短暂消失（被别的工具隐藏/最小化）再回来时，
             // 不能当成新窗口排到最后（否则原本的主窗会被挤到小格子里）。
@@ -503,9 +501,7 @@ public sealed class ZoneSession : IDisposable
                     {
                         // 对话框期间窗口可能变化：重新枚举一次，用“批准的主窗”重新规划后应用，
                         // 让工作区与一次性布局批准后的 pinned 结果逐像素一致。
-                        var latest = _collectWindows()
-                            .Where(w => !w.CannotMove && w.Monitor == Monitor)
-                            .ToList();
+                        var latest = LayoutService.ZoneWindowsOnMonitor(_collectWindows(), Monitor);
                         if (generation != _sessionGeneration || Workspace == null)
                         {
                             return;

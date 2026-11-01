@@ -32,6 +32,33 @@ public sealed class LayoutService
         ScopeWindows(WindowCollector.Collect(), scope);
 
     /// <summary>
+    /// 分区模式用：返回全部顶层窗口，**不按 Scope 过滤**（含提权窗口）。
+    /// 分区会话始终只处理自己的显示器，所以不能再让“光标所在/所有显示器”动态改变窗口集合。
+    /// </summary>
+    public IReadOnlyList<WindowInfo> GetZoneWindows() => WindowCollector.Collect();
+
+    /// <summary>当前鼠标所在显示器（分区入口按它选屏）。</summary>
+    public IntPtr GetCursorMonitor() => NativeMethods.GetCursorMonitor();
+
+    /// <summary>
+    /// 分区会话用：只保留指定显示器上的可移动窗口。
+    /// 纯函数，便于入口与会话共用同一套过滤规则。
+    /// </summary>
+    public static List<WindowInfo> ZoneWindowsOnMonitor(
+        IEnumerable<WindowInfo> all, IntPtr monitor) =>
+        all.Where(w => !w.CannotMove && w.Monitor == monitor).ToList();
+
+    /// <summary>
+    /// 分区入口：取鼠标所在显示器上的可移动窗口；不足两个返回 false（不进入、不跨屏回落）。
+    /// </summary>
+    public static bool TryGetZoneWindows(
+        IEnumerable<WindowInfo> all, IntPtr monitor, out List<WindowInfo> windows)
+    {
+        windows = ZoneWindowsOnMonitor(all, monitor);
+        return windows.Count >= 2;
+    }
+
+    /// <summary>
     /// 排列窗口。
     /// </summary>
     /// <param name="minimizeOldest">
