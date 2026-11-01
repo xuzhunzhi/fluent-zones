@@ -53,6 +53,9 @@ public sealed class AppSettings
     /// <summary>点窗口关闭按钮时的行为；默认每次询问。</summary>
     public CloseAction CloseAction { get; set; } = CloseAction.Ask;
 
+    /// <summary>分区模式的能力开关是否开启；启动时只恢复开关，不自动进入工作区。</summary>
+    public bool ZoneModeEnabled { get; set; }
+
     /// <summary>各布局的"最多窗口数"，键是 <see cref="LayoutKind"/> 的名字；缺失或 0 表示不限制。</summary>
     public Dictionary<string, int> LayoutLimits { get; set; } = new();
 
@@ -87,6 +90,7 @@ public sealed class AppSettings
         StartWithWindows = false,
         ConfirmSwapOnFit = true,
         CloseAction = CloseAction.Ask,
+        ZoneModeEnabled = false,
         LayoutLimits = new Dictionary<string, int>
         {
             [nameof(LayoutKind.Grid)] = GridLimitDefault,

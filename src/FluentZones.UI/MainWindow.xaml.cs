@@ -147,7 +147,11 @@ public sealed partial class MainWindow : Window
             }
             else
             {
-                UpdateStatus("就绪：Ctrl+Alt+Z 开关分区模式；选布局进入工作区", StatusLevel.Info);
+                UpdateStatus(
+                    ZoneToggle.IsOn && !_zones.IsActive
+                        ? "分区模式已开启：选一个布局（卡片或 Ctrl+Alt+1..5）进入工作区"
+                        : "就绪：Ctrl+Alt+Z 开关分区模式；选布局进入工作区",
+                    StatusLevel.Info);
             }
         }
         catch (Exception ex)
@@ -909,6 +913,13 @@ public sealed partial class MainWindow : Window
 
         UpdateToggleText(StartupStateText, StartupToggle);
         UpdateToggleText(ElevatedStateText, ElevatedToggle);
+
+        // 恢复「分区模式」能力开关；这里只是 UI 同步，不能反过来写设置。
+        _syncingZoneToggle = true;
+        ZoneToggle.IsOn = _settings.ZoneModeEnabled;
+        _syncingZoneToggle = false;
+        UpdateToggleText(ZoneStateText, ZoneToggle);
+
         SwapConfirmToggle.IsOn = _settings.ConfirmSwapOnFit;
         UpdateToggleText(SwapConfirmStateText, SwapConfirmToggle);
         CloseActionCombo.SelectedIndex = _settings.CloseAction switch
@@ -1939,6 +1950,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        _settings.ZoneModeEnabled = ZoneToggle.IsOn;
+        SettingsStore.Save(_settings);
+
         // 开关只表示「开启分区能力」：打开时不动窗口，等你选一个布局再进工作区
         if (ZoneToggle.IsOn)
         {
@@ -2071,6 +2085,12 @@ public sealed partial class MainWindow : Window
         ZoneToggle.IsOn = on;
         _syncingZoneToggle = false;
         UpdateToggleText(ZoneStateText, ZoneToggle);
+
+        if (!_initializing && _settings.ZoneModeEnabled != on)
+        {
+            _settings.ZoneModeEnabled = on;
+            SettingsStore.Save(_settings);
+        }
     }
 
     /// <summary>
