@@ -188,6 +188,8 @@ public sealed class ZoneTitleDragHook : IDisposable
                     if (dx * dx + dy * dy > DragThreshold * DragThreshold)
                     {
                         _dragging = true;
+                        _lastClickWindow = IntPtr.Zero;
+                        _lastClickTick = 0;
                         StartVisuals(info.pt);
                         var started = DragStarted;
                         started?.Invoke();
