@@ -19,6 +19,9 @@ public sealed class ZoneWorkspace
 
     public int Gap { get; private set; }
 
+    /// <summary>主窗位置/镜像；比例和切分树本身不变，只在计算矩形/分隔线/拖拽坐标时镜像。</summary>
+    public Mirror MirrorState { get; set; } = Mirror.None;
+
     /// <summary>
     /// 分区可用区域四边留给窗口边框的边距。一次性布局与工作区必须用同一份区域，
     /// 否则同一个布局“进工作区前 / 进工作区后”的分隔线会差几个像素。
@@ -34,6 +37,153 @@ public sealed class ZoneWorkspace
 
     /// <summary>拖拽时临时改窗口间隙（0 = 两扇窗贴边，边框合成一条）。</summary>
     public void SetGap(int gap) => Gap = Math.Max(0, gap);
+
+    /// <summary>深拷贝切分树（窗口引用共享），用于交换候选/回滚。</summary>
+    public ZoneWorkspace Clone() =>
+        new(CloneNode(Root), Area, Gap) { MirrorState = this.MirrorState };
+
+    private static ZoneNode CloneNode(ZoneNode node) =>
+        node.IsLeaf
+            ? ZoneNode.Leaf(node.Window!)
+            : ZoneNode.Split(
+                node.Horizontal,
+                CloneNode(node.First!),
+                CloneNode(node.Second!),
+                node.Ratio);
+
+    /// <summary>交换两个窗口所在的叶子；槽位比例与树的形状不变。</summary>
+    public bool SwapWindows(WindowInfo first, WindowInfo second) =>
+        SwapWindows(first.Handle, second.Handle);
+
+    /// <summary>交换两个窗口句柄所在的叶子；找不到或同一个窗口返回 false。</summary>
+    public bool SwapWindows(IntPtr firstHandle, IntPtr secondHandle)
+    {
+        if (firstHandle == secondHandle)
+        {
+            return false;
+        }
+
+        var first = FindLeaf(Root, firstHandle);
+        var second = FindLeaf(Root, secondHandle);
+        if (first == null || second == null)
+        {
+            return false;
+        }
+
+        (first.Window, second.Window) = (second.Window, first.Window);
+        return true;
+    }
+
+    /// <summary>
+    /// 把目标窗口所在的槽位升为主窗：与主窗叶子交换在树中的位置，
+    /// 原主窗落到目标槽位（降为副窗）。比例不变，随后由调用方设置镜像。
+    /// </summary>
+    public bool PromoteToMain(WindowInfo window)
+    {
+        var target = FindLeaf(Root, window.Handle);
+        if (target == null)
+        {
+            return false;
+        }
+
+        var main = FirstLeaf(Root);
+        if (ReferenceEquals(target, main))
+        {
+            return false;
+        }
+
+        var targetParent = FindParent(Root, target);
+        var mainParent = FindParent(Root, main);
+        if (targetParent == null || mainParent == null)
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(targetParent, mainParent))
+        {
+            if (ReferenceEquals(targetParent.First, target) && ReferenceEquals(targetParent.Second, main))
+            {
+                targetParent.First = main;
+                targetParent.Second = target;
+            }
+            else if (ReferenceEquals(targetParent.First, main) && ReferenceEquals(targetParent.Second, target))
+            {
+                targetParent.First = target;
+                targetParent.Second = main;
+            }
+            else
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        ReplaceChild(targetParent, target, main);
+        ReplaceChild(mainParent, main, target);
+        return true;
+    }
+
+    private static ZoneNode? FindLeaf(ZoneNode node, IntPtr handle)
+    {
+        if (node.Window != null)
+        {
+            return node.Window.Handle == handle ? node : null;
+        }
+
+        return FindLeaf(node.First!, handle) ?? FindLeaf(node.Second!, handle);
+    }
+
+    private static ZoneNode FirstLeaf(ZoneNode node)
+    {
+        while (!node.IsLeaf)
+        {
+            node = node.First!;
+        }
+
+        return node;
+    }
+
+    private static void ReplaceChild(ZoneNode parent, ZoneNode oldChild, ZoneNode newChild)
+    {
+        if (ReferenceEquals(parent.First, oldChild))
+        {
+            parent.First = newChild;
+        }
+        else if (ReferenceEquals(parent.Second, oldChild))
+        {
+            parent.Second = newChild;
+        }
+    }
+
+    /// <summary>把工作区矩形映射到镜像坐标系；宽高不变。</summary>
+    private WindowRect MirrorRect(WindowRect rect)
+    {
+        var left = rect.Left;
+        var top = rect.Top;
+
+        if (MirrorState is Mirror.Horizontal or Mirror.Both)
+        {
+            left = Area.Left + Area.Width - (rect.Left - Area.Left) - rect.Width;
+        }
+
+        if (MirrorState is Mirror.Vertical or Mirror.Both)
+        {
+            top = Area.Top + Area.Height - (rect.Top - Area.Top) - rect.Height;
+        }
+
+        return new WindowRect(left, top, rect.Width, rect.Height);
+    }
+
+    private int UnmirrorX(int x) =>
+        MirrorState is Mirror.Horizontal or Mirror.Both
+            ? Area.Left + Area.Width - (x - Area.Left)
+            : x;
+
+    private int UnmirrorY(int y) =>
+        MirrorState is Mirror.Vertical or Mirror.Both
+            ? Area.Top + Area.Height - (y - Area.Top)
+            : y;
 
     /// <summary>按指定布局把窗口组织成树。</summary>
     public static ZoneWorkspace Create(LayoutKind kind, IReadOnlyList<WindowInfo> windows, WindowRect area, int gap)
@@ -634,12 +784,20 @@ public sealed class ZoneWorkspace
         CollectWindows(node.Second!, result);
     }
 
-    /// <summary>算出每个窗口的目标矩形（可见边框）。</summary>
+    /// <summary>算出每个窗口的目标矩形（可见边框），已应用 <see cref="MirrorState"/>。</summary>
     public List<ZonePlacement> Compute()
     {
         var result = new List<ZonePlacement>();
         ComputeNode(Root, Area, result);
-        return result;
+
+        if (MirrorState == Mirror.None)
+        {
+            return result;
+        }
+
+        return result
+            .Select(placement => new ZonePlacement(placement.Window, MirrorRect(placement.Rect)))
+            .ToList();
     }
 
     private void ComputeNode(ZoneNode node, WindowRect rect, List<ZonePlacement> result)
@@ -673,8 +831,21 @@ public sealed class ZoneWorkspace
             new WindowRect(rect.Left, rect.Top + firstHeight + Gap, rect.Width, usableHeight - firstHeight));
     }
 
-    /// <summary>当前所有分隔线（含拖拽热区所在的整段区域）。</summary>
+    /// <summary>当前所有分隔线（含拖拽热区所在的整段区域），已应用镜像。</summary>
     public List<ZoneDivider> Dividers()
+    {
+        var result = RawDividers();
+        if (MirrorState == Mirror.None)
+        {
+            return result;
+        }
+
+        return result
+            .Select(divider => divider with { Region = MirrorRect(divider.Region) })
+            .ToList();
+    }
+
+    private List<ZoneDivider> RawDividers()
     {
         var result = new List<ZoneDivider>();
         CollectDividers(Root, Area, result);
@@ -816,7 +987,10 @@ public sealed class ZoneWorkspace
     /// </summary>
     public bool Drag(ZoneNode node, int screenX, int screenY, bool snap = true)
     {
-        var dividers = Dividers();
+        // 镜像下：屏幕点先反变换回切分树的坐标系，分隔线区域也用未镜像的那一份。
+        var pointX = UnmirrorX(screenX);
+        var pointY = UnmirrorY(screenY);
+        var dividers = RawDividers();
         var divider = dividers.FirstOrDefault(d => ReferenceEquals(d.Node, node));
         if (divider == null)
         {
@@ -852,7 +1026,7 @@ public sealed class ZoneWorkspace
         }
 
         var position = Math.Clamp(
-            horizontal ? screenX - region.Left : screenY - region.Top, range.Min, range.Max);
+            horizontal ? pointX - region.Left : pointY - region.Top, range.Min, range.Max);
         var ratio = RatioOf(position, usable);
 
         if (Math.Abs(ratio - node.Ratio) < 0.0005)

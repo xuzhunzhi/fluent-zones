@@ -34,6 +34,9 @@ public sealed class AppSettings
     /// <summary>启动时请求管理员权限（UAC），用于操作提权窗口。打包（MSIX）应用不支持。</summary>
     public bool RunAsAdmin { get; set; }
 
+    /// <summary>交换窗口需要调整分界线/换主窗时先询问；false 表示按上次允许的方式直接处理。</summary>
+    public bool ConfirmSwapOnFit { get; set; } = true;
+
     /// <summary>各布局的"最多窗口数"，键是 <see cref="LayoutKind"/> 的名字；缺失或 0 表示不限制。</summary>
     public Dictionary<string, int> LayoutLimits { get; set; } = new();
 
@@ -66,6 +69,7 @@ public sealed class AppSettings
         Gap = 6,
         Scope = LayoutScope.CursorMonitor,
         StartWithWindows = false,
+        ConfirmSwapOnFit = true,
         LayoutLimits = new Dictionary<string, int>
         {
             [nameof(LayoutKind.Grid)] = GridLimitDefault,
