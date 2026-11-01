@@ -479,11 +479,20 @@ internal static class NativeMethods
     internal static extern bool DeleteDC(IntPtr hdc);
 
     internal const uint SRCCOPY = 0x00CC0020;
+    internal const int HALFTONE = 4;
 
     [DllImport("gdi32.dll")]
     internal static extern bool BitBlt(
         IntPtr hdcDest, int xDest, int yDest, int width, int height,
         IntPtr hdcSrc, int xSrc, int ySrc, uint rop);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool StretchBlt(
+        IntPtr hdcDest, int xDest, int yDest, int destWidth, int destHeight,
+        IntPtr hdcSrc, int xSrc, int ySrc, int srcWidth, int srcHeight, uint rop);
+
+    [DllImport("gdi32.dll")]
+    internal static extern int SetStretchBltMode(IntPtr hdc, int mode);
 
     [DllImport("user32.dll")]
     internal static extern IntPtr GetDC(IntPtr hwnd);

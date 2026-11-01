@@ -30,6 +30,8 @@ public sealed class ZoneTitleDragHook : IDisposable
     private IntPtr _thumbBitmap;
     private int _thumbWidth;
     private int _thumbHeight;
+    private int _thumbSourceWidth;
+    private int _thumbSourceHeight;
     private IntPtr _grayDc;
     private IntPtr _grayDib;
     private IntPtr _grayBits;
@@ -42,6 +44,9 @@ public sealed class ZoneTitleDragHook : IDisposable
     private WindowInfo? _pendingInfo;
     private NativeMethods.POINT _downPoint;
     private bool _dragging;
+    private bool _swallowNextUp;
+    private List<ZonePlacement>? _dragPlacements;
+    private WindowRect _dragArea;
     private IntPtr _lastClickWindow;
     private long _lastClickTick;
     private int _captureToken;
@@ -193,6 +198,7 @@ public sealed class ZoneTitleDragHook : IDisposable
                     _pendingInfo = window;
                     _downPoint = info.pt;
                     _dragging = false;
+                    _swallowNextUp = true;
                     return new IntPtr(1);
                 }
             }
@@ -215,12 +221,23 @@ public sealed class ZoneTitleDragHook : IDisposable
 
                 if (_dragging)
                 {
+                    // 只移动缩略图/更新灰色槽位。低层钩子吞掉 WM_MOUSEMOVE 会冻结系统光标，
+                    // 所以这里绝不能 return 1，必须继续 CallNextHookEx。
                     MoveVisuals(info.pt);
-                    return new IntPtr(1);
                 }
             }
-            else if (message == NativeMethods.WM_LBUTTONUP && _pendingWindow != IntPtr.Zero)
+            else if (message == NativeMethods.WM_LBUTTONUP && _swallowNextUp)
             {
+                _swallowNextUp = false;
+
+                // down 被吞时，up 也必须被吞（即使拖拽已被 Hide/退出清掉），
+                // 否则目标窗口会收到没有 down 的 up，状态可能卡住。
+                if (_pendingWindow == IntPtr.Zero)
+                {
+                    HideVisuals();
+                    return new IntPtr(1);
+                }
+
                 var wasDragging = _dragging;
                 var source = _pendingInfo;
                 var sourceHwnd = _pendingWindow;
@@ -318,20 +335,27 @@ public sealed class ZoneTitleDragHook : IDisposable
 
     private ZonePlacement? FindTarget(NativeMethods.POINT point)
     {
-        var workspace = _getWorkspace();
-        if (workspace == null)
+        var placements = _dragPlacements;
+        var area = _dragArea;
+        if (placements == null)
         {
-            return null;
+            var workspace = _getWorkspace();
+            if (workspace == null)
+            {
+                return null;
+            }
+
+            placements = workspace.Compute();
+            area = workspace.Area;
         }
 
-        var area = workspace.Area;
         if (point.X < area.Left || point.X >= area.Right ||
             point.Y < area.Top || point.Y >= area.Bottom)
         {
             return null;
         }
 
-        return workspace.Compute().FirstOrDefault(p =>
+        return placements.FirstOrDefault(p =>
             point.X >= p.Rect.Left && point.X < p.Rect.Right &&
             point.Y >= p.Rect.Top && point.Y < p.Rect.Bottom);
     }
@@ -347,6 +371,8 @@ public sealed class ZoneTitleDragHook : IDisposable
 
         // 缩略图必须在后台截：低层鼠标钩子有超时，PrintWindow 可能几十到几百毫秒。
         // 截图期间拖拽和灰色槽位照常工作；超过 150ms 的截图直接丢弃。
+        _dragPlacements = workspace.Compute();
+        _dragArea = workspace.Area;
         DestroyThumbSurface();
         if (_thumbHwnd != IntPtr.Zero)
         {
@@ -510,8 +536,14 @@ public sealed class ZoneTitleDragHook : IDisposable
             NativeMethods.SelectObject(dc, capture.Bitmap);
             _thumbDc = dc;
             _thumbBitmap = capture.Bitmap;
-            _thumbWidth = capture.Width;
-            _thumbHeight = capture.Height;
+            _thumbSourceWidth = Math.Max(capture.Width, 1);
+            _thumbSourceHeight = Math.Max(capture.Height, 1);
+
+            // 缩略图约 50%，但最长边不超过 480px。
+            var longest = Math.Max(_thumbSourceWidth, _thumbSourceHeight);
+            var scale = Math.Min(0.5, 480.0 / longest);
+            _thumbWidth = Math.Max(1, (int)Math.Round(_thumbSourceWidth * scale));
+            _thumbHeight = Math.Max(1, (int)Math.Round(_thumbSourceHeight * scale));
         }
         finally
         {
@@ -534,8 +566,11 @@ public sealed class ZoneTitleDragHook : IDisposable
             return;
         }
 
+        // 让鼠标落在缩略图的标题栏附近，而不是整张图的中心，避免挡视线。
+        var grabX = _thumbWidth / 2;
+        var grabY = Math.Clamp(_thumbHeight / 16, 8, 20);
         NativeMethods.SetWindowPos(
-            _thumbHwnd, new IntPtr(-1), point.X + 12, point.Y + 12,
+            _thumbHwnd, new IntPtr(-1), point.X - grabX, point.Y - grabY,
             Math.Max(_thumbWidth, 1), Math.Max(_thumbHeight, 1),
             NativeMethods.SWP_NOACTIVATE);
     }
@@ -688,6 +723,8 @@ public sealed class ZoneTitleDragHook : IDisposable
         _pendingWindow = IntPtr.Zero;
         _pendingInfo = null;
         _dragging = false;
+        _dragPlacements = null;
+        _dragArea = default;
         _grayTarget = IntPtr.Zero;
         if (_thumbHwnd != IntPtr.Zero)
         {
@@ -712,8 +749,10 @@ public sealed class ZoneTitleDragHook : IDisposable
         if (msg == NativeMethods.WM_PAINT && hWnd == _thumbHwnd && _thumbDc != IntPtr.Zero)
         {
             NativeMethods.BeginPaint(hWnd, out var ps);
-            NativeMethods.BitBlt(
-                ps.hdc, 0, 0, _thumbWidth, _thumbHeight, _thumbDc, 0, 0,
+            NativeMethods.SetStretchBltMode(ps.hdc, NativeMethods.HALFTONE);
+            NativeMethods.StretchBlt(
+                ps.hdc, 0, 0, _thumbWidth, _thumbHeight,
+                _thumbDc, 0, 0, _thumbSourceWidth, _thumbSourceHeight,
                 NativeMethods.SRCCOPY);
             NativeMethods.EndPaint(hWnd, ref ps);
             return IntPtr.Zero;
@@ -738,6 +777,8 @@ public sealed class ZoneTitleDragHook : IDisposable
 
         _thumbWidth = 0;
         _thumbHeight = 0;
+        _thumbSourceWidth = 0;
+        _thumbSourceHeight = 0;
     }
 
     private void DestroyGraySurface()
