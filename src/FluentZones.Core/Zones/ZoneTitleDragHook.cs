@@ -11,8 +11,9 @@ namespace FluentZones.Core;
 public sealed class ZoneTitleDragHook : IDisposable
 {
     private const int WmHide = 0x8000 + 61;
-    private const int WmCaptureFailure = 0x8000 + 62;
+    private const int WmThumbReady = 0x8000 + 63;
     private const int DragThreshold = 4;
+    private const int ThumbnailDeadlineMs = 150;
 
     private readonly Func<ZoneWorkspace?> _getWorkspace;
     private readonly ManualResetEventSlim _ready = new(false);
@@ -26,8 +27,7 @@ public sealed class ZoneTitleDragHook : IDisposable
     private IntPtr _thumbHwnd;
     private IntPtr _grayHwnd;
     private IntPtr _thumbDc;
-    private IntPtr _thumbDib;
-    private IntPtr _thumbBits;
+    private IntPtr _thumbBitmap;
     private int _thumbWidth;
     private int _thumbHeight;
     private IntPtr _grayDc;
@@ -36,6 +36,7 @@ public sealed class ZoneTitleDragHook : IDisposable
     private int _grayWidth;
     private int _grayHeight;
     private WindowRect _grayArea;
+    private IntPtr _grayTarget;
 
     private IntPtr _pendingWindow;
     private WindowInfo? _pendingInfo;
@@ -43,7 +44,17 @@ public sealed class ZoneTitleDragHook : IDisposable
     private bool _dragging;
     private IntPtr _lastClickWindow;
     private long _lastClickTick;
+    private int _captureToken;
+    private long _thumbDeadline;
     private Exception? _startupError;
+
+    private sealed class ThumbnailCapture
+    {
+        public int Token;
+        public IntPtr Bitmap;
+        public int Width;
+        public int Height;
+    }
 
     public event Action? DragStarted;
     public event Action? DragEnded;
@@ -87,7 +98,7 @@ public sealed class ZoneTitleDragHook : IDisposable
 
     private void HookLoop()
     {
-        _threadId = (uint)Environment.CurrentManagedThreadId;
+        _threadId = NativeMethods.GetCurrentThreadId();
 
         try
         {
@@ -149,6 +160,12 @@ public sealed class ZoneTitleDragHook : IDisposable
             if (msg.message == WmHide)
             {
                 HideVisuals();
+                continue;
+            }
+
+            if (msg.message == WmThumbReady)
+            {
+                OnThumbnailReady(msg.wParam);
                 continue;
             }
 
@@ -322,15 +339,29 @@ public sealed class ZoneTitleDragHook : IDisposable
     private void StartVisuals(NativeMethods.POINT point)
     {
         var workspace = _getWorkspace();
-        if (workspace == null || _pendingWindow == IntPtr.Zero)
+        if (workspace == null || _pendingWindow == IntPtr.Zero ||
+            !NativeMethods.GetWindowRect(_pendingWindow, out var rect))
         {
             return;
         }
 
-        CaptureThumbnail(_pendingWindow);
-        MoveThumbnail(point);
-        ShowThumbnail();
+        // 缩略图必须在后台截：低层鼠标钩子有超时，PrintWindow 可能几十到几百毫秒。
+        // 截图期间拖拽和灰色槽位照常工作；超过 150ms 的截图直接丢弃。
+        DestroyThumbSurface();
+        if (_thumbHwnd != IntPtr.Zero)
+        {
+            NativeMethods.ShowWindow(_thumbHwnd, NativeMethods.SW_HIDE);
+        }
+
+        var token = Interlocked.Increment(ref _captureToken);
+        _thumbDeadline = Environment.TickCount64 + ThumbnailDeadlineMs;
+        var hwnd = _pendingWindow;
+        var width = Math.Max(rect.Width, 1);
+        var height = Math.Max(rect.Height, 1);
+        var threadId = _threadId;
+
         UpdateGrayTarget(point);
+        _ = Task.Run(() => CaptureThumbnailAsync(threadId, hwnd, width, height, token));
     }
 
     private void MoveVisuals(NativeMethods.POINT point)
@@ -339,22 +370,28 @@ public sealed class ZoneTitleDragHook : IDisposable
         UpdateGrayTarget(point);
     }
 
-    private void CaptureThumbnail(IntPtr hwnd)
+    private void CaptureThumbnailAsync(
+        uint threadId, IntPtr hwnd, int width, int height, int token)
     {
-        if (!NativeMethods.GetWindowRect(hwnd, out var rect))
+        IntPtr bitmap = IntPtr.Zero;
+        try
         {
-            return;
-        }
+            if (Volatile.Read(ref _captureToken) != token ||
+                !NativeMethods.IsWindow(hwnd))
+            {
+                return;
+            }
 
-        var width = Math.Max(rect.Width, 1);
-        var height = Math.Max(rect.Height, 1);
-        if (_thumbDc == IntPtr.Zero || width != _thumbWidth || height != _thumbHeight)
-        {
-            DestroyThumbSurface();
             var screen = NativeMethods.GetDC(IntPtr.Zero);
+            var dc = IntPtr.Zero;
             try
             {
-                _thumbDc = NativeMethods.CreateCompatibleDC(screen);
+                dc = NativeMethods.CreateCompatibleDC(screen);
+                if (dc == IntPtr.Zero)
+                {
+                    return;
+                }
+
                 var bmi = new NativeMethods.BITMAPINFO
                 {
                     bmiHeader = new NativeMethods.BITMAPINFOHEADER
@@ -367,49 +404,132 @@ public sealed class ZoneTitleDragHook : IDisposable
                         biCompression = 0,
                     },
                 };
-                _thumbDib = NativeMethods.CreateDIBSection(
-                    _thumbDc, ref bmi, 0, out _thumbBits, IntPtr.Zero, 0);
-                if (_thumbDib != IntPtr.Zero)
+                bitmap = NativeMethods.CreateDIBSection(
+                    dc, ref bmi, 0, out _, IntPtr.Zero, 0);
+                if (bitmap == IntPtr.Zero)
                 {
-                    NativeMethods.SelectObject(_thumbDc, _thumbDib);
+                    return;
                 }
+
+                var old = NativeMethods.SelectObject(dc, bitmap);
+                if (!NativeMethods.PrintWindow(hwnd, dc, NativeMethods.PW_RENDERFULLCONTENT) &&
+                    NativeMethods.GetWindowRect(hwnd, out var rect))
+                {
+                    NativeMethods.BitBlt(
+                        dc, 0, 0, width, height, screen, rect.Left, rect.Top,
+                        NativeMethods.SRCCOPY);
+                }
+
+                NativeMethods.SelectObject(dc, old);
             }
             finally
             {
+                if (dc != IntPtr.Zero)
+                {
+                    NativeMethods.DeleteDC(dc);
+                }
+
                 NativeMethods.ReleaseDC(IntPtr.Zero, screen);
             }
 
-            _thumbWidth = width;
-            _thumbHeight = height;
+            // 截图期间可能已经松手/取消/换了一个拖拽：丢弃结果。
+            if (Volatile.Read(ref _captureToken) != token ||
+                !NativeMethods.IsWindow(hwnd))
+            {
+                NativeMethods.DeleteObject(bitmap);
+                bitmap = IntPtr.Zero;
+                return;
+            }
+
+            var capture = new ThumbnailCapture
+            {
+                Token = token,
+                Bitmap = bitmap,
+                Width = width,
+                Height = height,
+            };
+            bitmap = IntPtr.Zero;
+
+            var handle = GCHandle.Alloc(capture);
+            if (!NativeMethods.PostThreadMessage(
+                    threadId, WmThumbReady, GCHandle.ToIntPtr(handle), IntPtr.Zero))
+            {
+                handle.Free();
+                NativeMethods.DeleteObject(capture.Bitmap);
+            }
+        }
+        catch
+        {
+            if (bitmap != IntPtr.Zero)
+            {
+                NativeMethods.DeleteObject(bitmap);
+            }
+        }
+    }
+
+    private void OnThumbnailReady(IntPtr handlePointer)
+    {
+        ThumbnailCapture? capture = null;
+        try
+        {
+            var handle = GCHandle.FromIntPtr(handlePointer);
+            capture = handle.Target as ThumbnailCapture;
+            handle.Free();
+        }
+        catch
+        {
+            // 句柄无效时忽略
         }
 
-        if (_thumbDc == IntPtr.Zero)
+        if (capture == null)
         {
             return;
         }
 
-        if (!NativeMethods.PrintWindow(hwnd, _thumbDc, NativeMethods.PW_RENDERFULLCONTENT))
+        if (capture.Token != Volatile.Read(ref _captureToken) ||
+            !_dragging ||
+            _pendingWindow == IntPtr.Zero ||
+            Environment.TickCount64 > _thumbDeadline)
         {
-            // PrintWindow 对部分应用无效：退化为当前屏幕区域复制，至少能跟手。
-            var screen = NativeMethods.GetDC(IntPtr.Zero);
-            try
+            NativeMethods.DeleteObject(capture.Bitmap);
+            return;
+        }
+
+        DestroyThumbSurface();
+
+        var screen = NativeMethods.GetDC(IntPtr.Zero);
+        try
+        {
+            var dc = NativeMethods.CreateCompatibleDC(screen);
+            if (dc == IntPtr.Zero)
             {
-                NativeMethods.BitBlt(
-                    _thumbDc, 0, 0, width, height, screen, rect.Left, rect.Top,
-                    NativeMethods.SRCCOPY);
+                NativeMethods.DeleteObject(capture.Bitmap);
+                return;
             }
-            finally
-            {
-                NativeMethods.ReleaseDC(IntPtr.Zero, screen);
-            }
+
+            NativeMethods.SelectObject(dc, capture.Bitmap);
+            _thumbDc = dc;
+            _thumbBitmap = capture.Bitmap;
+            _thumbWidth = capture.Width;
+            _thumbHeight = capture.Height;
+        }
+        finally
+        {
+            NativeMethods.ReleaseDC(IntPtr.Zero, screen);
+        }
+
+        if (NativeMethods.GetCursorPos(out var cursor))
+        {
+            MoveThumbnail(cursor);
         }
 
         NativeMethods.InvalidateRect(_thumbHwnd, IntPtr.Zero, true);
+        ShowThumbnail();
     }
 
     private void MoveThumbnail(NativeMethods.POINT point)
     {
-        if (_thumbHwnd == IntPtr.Zero)
+        if (_thumbHwnd == IntPtr.Zero || _thumbBitmap == IntPtr.Zero)
         {
             return;
         }
@@ -422,7 +542,7 @@ public sealed class ZoneTitleDragHook : IDisposable
 
     private void ShowThumbnail()
     {
-        if (_thumbHwnd != IntPtr.Zero)
+        if (_thumbHwnd != IntPtr.Zero && _thumbBitmap != IntPtr.Zero)
         {
             NativeMethods.ShowWindow(_thumbHwnd, NativeMethods.SW_SHOWNOACTIVATE);
         }
@@ -434,10 +554,18 @@ public sealed class ZoneTitleDragHook : IDisposable
         var target = FindTarget(point);
         if (workspace == null || target == null)
         {
+            _grayTarget = IntPtr.Zero;
             HideGray();
             return;
         }
 
+        if (_grayTarget == target.Window.Handle && _grayHwnd != IntPtr.Zero &&
+            NativeMethods.IsWindowVisible(_grayHwnd))
+        {
+            return;
+        }
+
+        _grayTarget = target.Window.Handle;
         EnsureGraySurface(workspace.Area);
         if (_grayBits == IntPtr.Zero)
         {
@@ -556,9 +684,11 @@ public sealed class ZoneTitleDragHook : IDisposable
 
     private void HideVisuals()
     {
+        Interlocked.Increment(ref _captureToken);
         _pendingWindow = IntPtr.Zero;
         _pendingInfo = null;
         _dragging = false;
+        _grayTarget = IntPtr.Zero;
         if (_thumbHwnd != IntPtr.Zero)
         {
             NativeMethods.ShowWindow(_thumbHwnd, NativeMethods.SW_HIDE);
@@ -600,13 +730,12 @@ public sealed class ZoneTitleDragHook : IDisposable
             _thumbDc = IntPtr.Zero;
         }
 
-        if (_thumbDib != IntPtr.Zero)
+        if (_thumbBitmap != IntPtr.Zero)
         {
-            NativeMethods.DeleteObject(_thumbDib);
-            _thumbDib = IntPtr.Zero;
+            NativeMethods.DeleteObject(_thumbBitmap);
+            _thumbBitmap = IntPtr.Zero;
         }
 
-        _thumbBits = IntPtr.Zero;
         _thumbWidth = 0;
         _thumbHeight = 0;
     }

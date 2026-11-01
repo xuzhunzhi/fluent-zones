@@ -16,6 +16,7 @@ public sealed class ZoneDragHook : IDisposable
     private readonly ManualResetEventSlim _ready = new(false);
 
     private Thread? _thread;
+    private uint _threadId;
     private IntPtr _hook;
     private NativeMethods.HookProc? _proc;
     private ZoneWorkspace? _workspace;
@@ -81,6 +82,8 @@ public sealed class ZoneDragHook : IDisposable
 
     private void HookLoop()
     {
+        _threadId = NativeMethods.GetCurrentThreadId();
+
         try
         {
             _proc = HookProc;
@@ -293,7 +296,7 @@ public sealed class ZoneDragHook : IDisposable
         if (_thread != null && _thread.IsAlive && _hook != IntPtr.Zero)
         {
             NativeMethods.PostThreadMessage(
-                (uint)_thread.ManagedThreadId, 0x0012 /* WM_QUIT */, IntPtr.Zero, IntPtr.Zero);
+                _threadId, 0x0012 /* WM_QUIT */, IntPtr.Zero, IntPtr.Zero);
         }
 
         _thread?.Join(TimeSpan.FromSeconds(2));
