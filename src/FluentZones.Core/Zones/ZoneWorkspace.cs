@@ -614,6 +614,26 @@ public sealed class ZoneWorkspace
         return result;
     }
 
+    /// <summary>按切分树顺序列出槽位里的窗口（用于“保持上次分配的槽位”）。</summary>
+    public List<WindowInfo> WindowsInOrder()
+    {
+        var result = new List<WindowInfo>();
+        CollectWindows(Root, result);
+        return result;
+    }
+
+    private static void CollectWindows(ZoneNode node, List<WindowInfo> result)
+    {
+        if (node.Window != null)
+        {
+            result.Add(node.Window);
+            return;
+        }
+
+        CollectWindows(node.First!, result);
+        CollectWindows(node.Second!, result);
+    }
+
     /// <summary>算出每个窗口的目标矩形（可见边框）。</summary>
     public List<ZonePlacement> Compute()
     {

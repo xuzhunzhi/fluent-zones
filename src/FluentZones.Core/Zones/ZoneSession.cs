@@ -28,6 +28,7 @@ public sealed class ZoneSession : IDisposable
     private readonly HashSet<IntPtr> _windowHandles = new();
     private readonly HashSet<IntPtr> _bordered = new();
     private readonly Dictionary<IntPtr, int> _styles = new();
+    private readonly List<IntPtr> _lastOrder = new();
 
     private ZoneDragHook? _dragHook;
     private WinEventWatcher? _watcher;
@@ -182,6 +183,7 @@ public sealed class ZoneSession : IDisposable
         _dragHook?.Hide();
         Workspace = null;
         _windowHandles.Clear();
+        _lastOrder.Clear();
 
         if (notifyStatus)
         {
@@ -204,6 +206,9 @@ public sealed class ZoneSession : IDisposable
         // 先把窗口自己的缩放边框去掉，再按分区摆放：边距只由我们的分隔线调整
         SyncBorders(placements);
         PlaceRequested?.Invoke(placements);
+
+        _lastOrder.Clear();
+        _lastOrder.AddRange(workspace.WindowsInOrder().Select(w => w.Handle));
     }
 
     /// <summary>
@@ -351,6 +356,20 @@ public sealed class ZoneSession : IDisposable
             var windows = _collectWindows()
                 .Where(w => !w.CannotMove && w.Monitor == Monitor)
                 .ToList();
+
+            // 粘住上一次的槽位分配：窗口短暂消失（被别的工具隐藏/最小化）再回来时，
+            // 不能当成新窗口排到最后（否则原本的主窗会被挤到小格子里）。
+            // 仍在列表里的老窗口按上次的顺序排，新窗口保持 Z 序接在后面。
+            if (_lastOrder.Count > 0)
+            {
+                windows = windows
+                    .OrderBy(w =>
+                    {
+                        var index = _lastOrder.IndexOf(w.Handle);
+                        return index < 0 ? int.MaxValue : index;
+                    })
+                    .ToList();
+            }
 
             if (windows.Count == 0)
             {
