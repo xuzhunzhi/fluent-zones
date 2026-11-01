@@ -454,6 +454,7 @@ internal static class NativeMethods
     internal const uint EVENT_OBJECT_DESTROY = 0x8001;
     internal const uint EVENT_OBJECT_SHOW = 0x8002;
     internal const uint EVENT_OBJECT_HIDE = 0x8003;
+    internal const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
     internal const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     internal const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 

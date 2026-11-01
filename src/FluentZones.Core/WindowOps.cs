@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace FluentZones.Core;
 
 /// <summary>对任意窗口做的小动作（分区模式里腾位置、画边框用）。</summary>
@@ -25,6 +27,26 @@ public static class WindowOps
 
         NativeMethods.DwmSetWindowAttribute(
             hwnd, NativeMethods.DWMWA_BORDER_COLOR, ref color, sizeof(int));
+    }
+
+    /// <summary>窗口当前可见边缘（DWM 扩展边框，取不到时退回 GetWindowRect）。</summary>
+    public static WindowRect? GetVisibleBounds(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        var rect = new NativeMethods.RECT();
+        if (NativeMethods.DwmGetWindowAttribute(
+                hwnd, NativeMethods.DWMWA_EXTENDED_FRAME_BOUNDS, out rect,
+                Marshal.SizeOf<NativeMethods.RECT>()) != 0 &&
+            !NativeMethods.GetWindowRect(hwnd, out rect))
+        {
+            return null;
+        }
+
+        return new WindowRect(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
     }
 
     /// <summary>恢复系统默认边框色。</summary>

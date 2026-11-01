@@ -20,6 +20,18 @@ public sealed class ZoneDragHook : IDisposable
     private NativeMethods.HookProc? _proc;
     private ZoneWorkspace? _workspace;
     private ZoneNode? _dragging;
+
+    /// <summary>正在拖分隔线（这时外部窗口变化不要抢着重排）。</summary>
+    public bool IsDragging
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _dragging != null;
+            }
+        }
+    }
     private WindowRect _area;
     private Exception? _startupError;
 

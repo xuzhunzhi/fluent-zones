@@ -18,7 +18,7 @@ public sealed class WinEventWatcher : IDisposable
         _callback = OnWinEvent;
         _hook = NativeMethods.SetWinEventHook(
             NativeMethods.EVENT_OBJECT_CREATE,
-            NativeMethods.EVENT_OBJECT_HIDE,
+            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
             IntPtr.Zero,
             _callback,
             0,
@@ -42,6 +42,17 @@ public sealed class WinEventWatcher : IDisposable
     {
         // 只看顶层窗口本身（idObject = OBJID_WINDOW，idChild = 0）
         if (hwnd == IntPtr.Zero || idObject != 0 || idChild != 0)
+        {
+            return;
+        }
+
+        // 范围扩到 LOCATIONCHANGE 后中间夹着 FOCUSCHANGE / TEXTCHANGE 等高频道事件，只放行关心的
+        if (eventType is not (
+                NativeMethods.EVENT_OBJECT_CREATE or
+                NativeMethods.EVENT_OBJECT_DESTROY or
+                NativeMethods.EVENT_OBJECT_SHOW or
+                NativeMethods.EVENT_OBJECT_HIDE or
+                NativeMethods.EVENT_OBJECT_LOCATIONCHANGE))
         {
             return;
         }

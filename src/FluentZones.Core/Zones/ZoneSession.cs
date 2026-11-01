@@ -320,7 +320,25 @@ public sealed class ZoneSession : IDisposable
 
     private void OnWindowEvent(IntPtr hwnd, uint eventType)
     {
-        if (Workspace == null || _syncQueued)
+        if (Workspace == null)
+        {
+            return;
+        }
+
+        // 工作区窗口被外部工具（如 DSH 的 computer use）改了位置/大小：把它拉回槽位。
+        // 可能是程序自己 SetWindowPos 触发的事件，RealignAsync 比较后再决定要不要重排。
+        if (eventType == NativeMethods.EVENT_OBJECT_LOCATIONCHANGE)
+        {
+            if (_dragHook?.IsDragging == true || !_windowHandles.Contains(hwnd))
+            {
+                return;
+            }
+
+            _ = QueueRealignAsync();
+            return;
+        }
+
+        if (_syncQueued)
         {
             return;
         }
@@ -336,6 +354,68 @@ public sealed class ZoneSession : IDisposable
         {
             _postToUi(() => _ = SyncAsync());
         }
+    }
+
+    private bool _realignQueued;
+    private DateTime _lastRealign;
+
+    /// <summary>合并高频 LOCATIONCHANGE，延迟 150ms 再比对，避免和外部程序互相抖。</summary>
+    private async Task QueueRealignAsync()
+    {
+        if (_realignQueued)
+        {
+            return;
+        }
+
+        _realignQueued = true;
+        var generation = _sessionGeneration;
+        await Task.Delay(150);
+
+        if (_postToUi == null)
+        {
+            await RealignAsync(generation);
+        }
+        else
+        {
+            _postToUi(() => _ = RealignAsync(generation));
+        }
+    }
+
+    private async Task RealignAsync(int generation)
+    {
+        _realignQueued = false;
+
+        if (Workspace == null || generation != _sessionGeneration || _dragHook?.IsDragging == true)
+        {
+            return;
+        }
+
+        // 限频：一秒钟最多纠正一次，防止和会自行改尺寸的窗口来回打架
+        if ((DateTime.UtcNow - _lastRealign).TotalMilliseconds < 1000)
+        {
+            return;
+        }
+
+        foreach (var placement in Workspace.Compute())
+        {
+            var actual = WindowOps.GetVisibleBounds(placement.Window.Handle);
+            if (actual == null)
+            {
+                continue;
+            }
+
+            if (Math.Abs(actual.Value.Left - placement.Rect.Left) > 6 ||
+                Math.Abs(actual.Value.Top - placement.Rect.Top) > 6 ||
+                Math.Abs(actual.Value.Width - placement.Rect.Width) > 6 ||
+                Math.Abs(actual.Value.Height - placement.Rect.Height) > 6)
+            {
+                _lastRealign = DateTime.UtcNow;
+                Apply(Workspace);
+                return;
+            }
+        }
+
+        await Task.CompletedTask;
     }
 
     private async Task SyncAsync()
