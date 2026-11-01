@@ -83,6 +83,8 @@ public sealed partial class MainWindow : Window
         _zones.StatusRequested += OnZoneStatus;
         _zones.OverflowRequested = AskZoneOverflowAsync;
         _zones.MainSwapRequested = AskMainSwapAsync;
+        _zones.SwapConfirmationRequested = AskSwapAsync;
+        _zones.SwapCompleted += OnSwapCompleted;
         _zones.IsInteractionBusy = () => _prompting;
         // 只记第一次进入前的窗口位置：Ctrl+Alt+0 永远回到非工作区状态；
         // 放在 EnterAsync 校验通过、尚未移动窗口时执行，进入失败不会污染快照。
@@ -711,6 +713,8 @@ public sealed partial class MainWindow : Window
 
         UpdateToggleText(StartupStateText, StartupToggle);
         UpdateToggleText(ElevatedStateText, ElevatedToggle);
+        SwapConfirmToggle.IsOn = _settings.ConfirmSwapOnFit;
+        UpdateToggleText(SwapConfirmStateText, SwapConfirmToggle);
     }
 
     private void Nav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
@@ -1534,6 +1538,91 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private async Task<bool> AskSwapAsync(
+        WindowInfo source, WindowInfo target, ZoneSwapResult result)
+    {
+        var needsAdjust = result.Outcome == ZoneSwapOutcome.NeedsDividerAdjustment;
+
+        // 偏好关闭 = 需要调分界线时直接调整；Impossible 仍提示一次（左按钮置灰）。
+        if (needsAdjust && !_settings.ConfirmSwapOnFit)
+        {
+            return true;
+        }
+
+        if (_prompting)
+        {
+            UpdateStatus("正在处理另一个对话框，请稍后再试", StatusLevel.Warn);
+            return false;
+        }
+
+        _prompting = true;
+
+        try
+        {
+            CancelCapture(silent: true);
+            BringWindowToFront();
+
+            var message = needsAdjust
+                ? $"「{source.Title}」和「{target.Title}」交换后需要调整分界线才能放下。\n\n" +
+                  "主窗不会移动，只调整与目标槽位相关的分界线；是否继续？"
+                : $"「{source.Title}」和「{target.Title}」交换后即使只调整相关分界线也放不下。\n\n" +
+                  "主窗保持原位，已取消这次交换。";
+
+            var noPrompt = new CheckBox
+            {
+                Content = "不再提示",
+                IsChecked = false,
+                Visibility = needsAdjust ? Visibility.Visible : Visibility.Collapsed,
+            };
+
+            var content = new StackPanel { Spacing = 8 };
+            content.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap });
+            content.Children.Add(noPrompt);
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = "交换窗口",
+                Content = content,
+                PrimaryButtonText = "调整并交换",
+                CloseButtonText = "取消",
+                DefaultButton = needsAdjust
+                    ? ContentDialogButton.Primary
+                    : ContentDialogButton.Close,
+                IsPrimaryButtonEnabled = needsAdjust,
+            };
+
+            var choice = await dialog.ShowAsync();
+            if (choice != ContentDialogResult.Primary)
+            {
+                return false;
+            }
+
+            if (needsAdjust && noPrompt.IsChecked == true)
+            {
+                _settings.ConfirmSwapOnFit = false;
+                SettingsStore.Save(_settings);
+                SwapConfirmToggle.IsOn = false;
+                UpdateToggleText(SwapConfirmStateText, SwapConfirmToggle);
+            }
+
+            return true;
+        }
+        finally
+        {
+            _prompting = false;
+        }
+    }
+
+    private void OnSwapCompleted(
+        WindowInfo source, WindowInfo target, ZoneSwapOutcome outcome)
+    {
+        var suffix = outcome == ZoneSwapOutcome.NeedsDividerAdjustment
+            ? "，已调整分界线"
+            : string.Empty;
+        UpdateStatus($"已交换「{source.Title}」和「{target.Title}」{suffix}", StatusLevel.Success);
+    }
+
     private void BringWindowToFront()
     {
         try
@@ -1668,6 +1757,18 @@ public sealed partial class MainWindow : Window
         {
             UpdateStatus("分区模式已关闭", StatusLevel.Info);
         }
+    }
+
+    private void SwapConfirmToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        UpdateToggleText(SwapConfirmStateText, SwapConfirmToggle);
+        if (_initializing)
+        {
+            return;
+        }
+
+        _settings.ConfirmSwapOnFit = SwapConfirmToggle.IsOn;
+        SettingsStore.Save(_settings);
     }
 
     /// <summary>

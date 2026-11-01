@@ -239,6 +239,30 @@
                             </Grid>
                         </Border>
 
+                        <!-- 交换窗口确认 -->
+                        <Border Style="{StaticResource CardBorderStyle}" Padding="16,12">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="交换窗口时先询问" />
+                                    <TextBlock Text="标题栏拖拽交换需要调整分界线时先确认；关闭后直接调整"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12"
+                                            VerticalAlignment="Center">
+                                    <TextBlock x:Name="SwapConfirmStateText" Text="开" VerticalAlignment="Center" />
+                                    <ToggleSwitch x:Name="SwapConfirmToggle" MinWidth="0"
+                                                  OnContent="" OffContent=""
+                                                  VerticalAlignment="Center"
+                                                  Toggled="SwapConfirmToggle_Toggled" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
                     </StackPanel>
                 </StackPanel>
 
