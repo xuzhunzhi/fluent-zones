@@ -4,6 +4,19 @@ using Microsoft.Win32;
 
 namespace FluentZones.Core;
 
+/// <summary>点窗口关闭按钮时的行为。</summary>
+public enum CloseAction
+{
+    /// <summary>每次都询问。</summary>
+    Ask,
+
+    /// <summary>最小化到托盘继续运行。</summary>
+    MinimizeToTray,
+
+    /// <summary>直接退出。</summary>
+    Exit,
+}
+
 public sealed class HotkeySetting
 {
     public string Action { get; set; } = string.Empty;
@@ -36,6 +49,9 @@ public sealed class AppSettings
 
     /// <summary>交换窗口需要调整分界线/换主窗时先询问；false 表示按上次允许的方式直接处理。</summary>
     public bool ConfirmSwapOnFit { get; set; } = true;
+
+    /// <summary>点窗口关闭按钮时的行为；默认每次询问。</summary>
+    public CloseAction CloseAction { get; set; } = CloseAction.Ask;
 
     /// <summary>各布局的"最多窗口数"，键是 <see cref="LayoutKind"/> 的名字；缺失或 0 表示不限制。</summary>
     public Dictionary<string, int> LayoutLimits { get; set; } = new();
@@ -70,6 +86,7 @@ public sealed class AppSettings
         Scope = LayoutScope.CursorMonitor,
         StartWithWindows = false,
         ConfirmSwapOnFit = true,
+        CloseAction = CloseAction.Ask,
         LayoutLimits = new Dictionary<string, int>
         {
             [nameof(LayoutKind.Grid)] = GridLimitDefault,

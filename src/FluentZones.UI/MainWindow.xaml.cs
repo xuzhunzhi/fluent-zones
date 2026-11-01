@@ -41,6 +41,10 @@ public sealed partial class MainWindow : Window
     private bool _hotkeysAvailable;
     private bool _prompting;
     private bool _elevationPrompted;
+    private bool _closePrompting;
+    private bool _allowClose;
+    private bool _syncingCloseAction;
+    private TrayIcon? _tray;
 
     // 分区工作区的状态机（切分树、窗口句柄、显示器、布局类型、边框、拖拽钩子、窗口事件）都在 Core；
     // 这里只保留开关、窗口的收集/摆放、状态栏、对话框、卡片高亮和快照这些 UI 胶水。
@@ -153,6 +157,22 @@ public sealed partial class MainWindow : Window
         }
 
         _initializing = false;
+
+        try
+        {
+            _tray = new TrayIcon(System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico"));
+            _tray.OpenRequested += () => DispatcherQueue.TryEnqueue(ShowFromTray);
+            _tray.ExitRequested += () => DispatcherQueue.TryEnqueue(ExitFromTray);
+            _tray.Start();
+        }
+        catch (Exception ex)
+        {
+            _tray?.Dispose();
+            _tray = null;
+            UpdateStatus("托盘图标启动失败：" + ex.Message, StatusLevel.Warn);
+        }
+
+        AppWindow.Closing += OnAppWindowClosing;
         Closed += OnClosed;
     }
 
@@ -209,6 +229,182 @@ public sealed partial class MainWindow : Window
         // 恢复工作区里被去掉的窗口边框（并清掉落盘记录），再释放拖拽钩子与窗口监听
         _zones.Dispose();
         _hotkeys.Dispose();
+        _tray?.Dispose();
+        _tray = null;
+    }
+
+    private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (_allowClose)
+        {
+            return;
+        }
+
+        if (_closePrompting)
+        {
+            args.Cancel = true;
+            return;
+        }
+
+        switch (_settings.CloseAction)
+        {
+            case CloseAction.Exit:
+                _allowClose = true;
+                return;
+
+            case CloseAction.MinimizeToTray when _tray != null:
+                args.Cancel = true;
+                HideToTray();
+                return;
+
+            default:
+                args.Cancel = true;
+                _ = PromptCloseAsync();
+                return;
+        }
+    }
+
+    private async Task PromptCloseAsync()
+    {
+        if (_closePrompting)
+        {
+            return;
+        }
+
+        _closePrompting = true;
+
+        try
+        {
+            CancelCapture(silent: true);
+            BringWindowToFront();
+
+            var noPrompt = new CheckBox
+            {
+                Content = "不再提示",
+                IsChecked = false,
+            };
+
+            var content = new StackPanel { Spacing = 8 };
+            content.Children.Add(new TextBlock
+            {
+                Text = "关闭后程序会退出，分区模式和全局热键都会停止。\n\n" +
+                       "也可以最小化到托盘，继续在后台运行。",
+                TextWrapping = TextWrapping.Wrap,
+            });
+            content.Children.Add(noPrompt);
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = "关闭 Fluent Zones",
+                Content = content,
+                PrimaryButtonText = "最小化到托盘",
+                SecondaryButtonText = "直接退出",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary,
+                IsPrimaryButtonEnabled = _tray != null,
+            };
+
+            var result = await dialog.ShowAsync();
+            CloseAction? chosen = result switch
+            {
+                ContentDialogResult.Primary => CloseAction.MinimizeToTray,
+                ContentDialogResult.Secondary => CloseAction.Exit,
+                _ => null,
+            };
+
+            if (chosen == null)
+            {
+                return;
+            }
+
+            if (noPrompt.IsChecked == true)
+            {
+                _settings.CloseAction = chosen.Value;
+                SettingsStore.Save(_settings);
+                SyncCloseActionCombo();
+            }
+
+            if (chosen.Value == CloseAction.MinimizeToTray)
+            {
+                HideToTray();
+            }
+            else
+            {
+                ExitApplication();
+            }
+        }
+        finally
+        {
+            _closePrompting = false;
+        }
+    }
+
+    private void HideToTray()
+    {
+        if (_tray == null)
+        {
+            UpdateStatus("托盘图标不可用，无法最小化到托盘", StatusLevel.Warn);
+            return;
+        }
+
+        try
+        {
+            AppWindow.Hide();
+            UpdateStatus("已最小化到托盘，热键和分区模式继续工作；双击托盘图标恢复", StatusLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            UpdateStatus("最小化到托盘失败：" + ex.Message, StatusLevel.Warn);
+        }
+    }
+
+    private void ShowFromTray()
+    {
+        try
+        {
+            AppWindow.Show();
+        }
+        catch
+        {
+            // 窗口已经显示时 Show 可能抛异常，忽略
+        }
+
+        Activate();
+    }
+
+    private void ExitFromTray()
+    {
+        _tray?.Dispose();
+        _tray = null;
+        ExitApplication();
+    }
+
+    private void ExitApplication()
+    {
+        _allowClose = true;
+        Close();
+
+        try
+        {
+            Application.Current.Exit();
+        }
+        catch
+        {
+            // Close 已经走完清理时 Exit 可能已经无效，忽略
+        }
+    }
+
+    private void SyncCloseActionCombo()
+    {
+        _syncingCloseAction = true;
+        CloseActionCombo.SelectedIndex = _settings.CloseAction switch
+        {
+            CloseAction.MinimizeToTray => 1,
+            CloseAction.Exit => 2,
+            _ => 0,
+        };
+        _syncingCloseAction = false;
     }
 
     // ---------------- 布局卡片 ----------------
@@ -715,6 +911,12 @@ public sealed partial class MainWindow : Window
         UpdateToggleText(ElevatedStateText, ElevatedToggle);
         SwapConfirmToggle.IsOn = _settings.ConfirmSwapOnFit;
         UpdateToggleText(SwapConfirmStateText, SwapConfirmToggle);
+        CloseActionCombo.SelectedIndex = _settings.CloseAction switch
+        {
+            CloseAction.MinimizeToTray => 1,
+            CloseAction.Exit => 2,
+            _ => 0,
+        };
     }
 
     private void Nav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
@@ -1768,6 +1970,22 @@ public sealed partial class MainWindow : Window
         }
 
         _settings.ConfirmSwapOnFit = SwapConfirmToggle.IsOn;
+        SettingsStore.Save(_settings);
+    }
+
+    private void CloseActionCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing || _syncingCloseAction)
+        {
+            return;
+        }
+
+        _settings.CloseAction = CloseActionCombo.SelectedIndex switch
+        {
+            1 => CloseAction.MinimizeToTray,
+            2 => CloseAction.Exit,
+            _ => CloseAction.Ask,
+        };
         SettingsStore.Save(_settings);
     }
 

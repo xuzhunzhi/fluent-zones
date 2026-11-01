@@ -82,7 +82,7 @@
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                     </Grid>
-                    <TextBlock Text="提示：关闭窗口会退出程序；窗口最小化时热键依然生效。"
+                    <TextBlock Text="提示：关闭窗口默认会询问；最小化到托盘后热键依然生效。"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                 </StackPanel>
@@ -260,6 +260,29 @@
                                                   VerticalAlignment="Center"
                                                   Toggled="SwapConfirmToggle_Toggled" />
                                 </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- 关闭窗口时 -->
+                        <Border Style="{StaticResource CardBorderStyle}" Padding="16,12">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="关闭窗口时" />
+                                    <TextBlock Text="点 X 时的行为：每次询问、最小化到托盘或直接退出"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <ComboBox x:Name="CloseActionCombo" Grid.Column="1" MinWidth="160"
+                                          VerticalAlignment="Center"
+                                          SelectionChanged="CloseActionCombo_SelectionChanged">
+                                    <ComboBoxItem Content="每次询问" />
+                                    <ComboBoxItem Content="最小化到托盘" />
+                                    <ComboBoxItem Content="直接退出" />
+                                </ComboBox>
                             </Grid>
                         </Border>
 

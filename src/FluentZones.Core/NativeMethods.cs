@@ -33,6 +33,9 @@ internal static class NativeMethods
     internal const uint PW_RENDERFULLCONTENT = 0x00000002;
 
     internal const int WM_PAINT = 0x000F;
+    internal const int WM_NULL = 0x0000;
+    internal const int WM_RBUTTONUP = 0x0205;
+    internal const int WM_LBUTTONDBLCLK = 0x0203;
     internal const int WM_SETCURSOR = 0x0020;
     internal const int WM_NCHITTEST = 0x0084;
     internal const int WM_MOUSEMOVE = 0x0200;
@@ -42,6 +45,20 @@ internal static class NativeMethods
     internal const int IDC_SIZEWE = 32644;
     internal const int IDC_SIZENS = 32645;
     internal const int IDC_ARROW = 32512;
+
+    internal const uint NIM_ADD = 0;
+    internal const uint NIM_MODIFY = 1;
+    internal const uint NIM_DELETE = 2;
+    internal const uint NIF_MESSAGE = 0x00000001;
+    internal const uint NIF_ICON = 0x00000002;
+    internal const uint NIF_TIP = 0x00000004;
+    internal const uint IMAGE_ICON = 1;
+    internal const uint LR_LOADFROMFILE = 0x00000010;
+    internal const uint MF_SEPARATOR = 0x00000800;
+    internal const uint TPM_RETURNCMD = 0x00000100;
+    internal const uint TPM_LEFTALIGN = 0x0000;
+    internal const uint TPM_TOPALIGN = 0x0000;
+    internal const int IDI_APPLICATION = 32512;
 
     internal const int DWMWA_CLOAKED = 14;
     internal const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
@@ -93,6 +110,63 @@ internal static class NativeMethods
 
         public bool Contains(int x, int y) => x >= Left && x < Right && y >= Top && y < Bottom;
     }
+
+    [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct NOTIFYICONDATA
+    {
+        public int cbSize;
+        public IntPtr hWnd;
+        public uint uID;
+        public uint uFlags;
+        public uint uCallbackMessage;
+        public IntPtr hIcon;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        public string szTip;
+
+        public uint dwState;
+        public uint dwStateMask;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string szInfo;
+
+        public uint uTimeoutOrVersion;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+        public string szInfoTitle;
+
+        public uint dwInfoFlags;
+        public Guid guidItem;
+        public IntPtr hBalloonIcon;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    internal static extern bool Shell_NotifyIcon(uint dwMessage, ref NOTIFYICONDATA lpData);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr LoadImage(
+        IntPtr hinst, string lpszName, uint uType, int cxDesired, int cyDesired, uint fuLoad);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr LoadIcon(IntPtr hInstance, IntPtr lpIconName);
+
+    [DllImport("user32.dll")]
+    internal static extern bool DestroyIcon(IntPtr hIcon);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr CreatePopupMenu();
+
+    [DllImport("user32.dll")]
+    internal static extern bool DestroyMenu(IntPtr hMenu);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern bool AppendMenu(
+        IntPtr hMenu, uint uFlags, UIntPtr uIDNewItem, string? lpNewItem);
+
+    [DllImport("user32.dll")]
+    internal static extern int TrackPopupMenu(
+        IntPtr hMenu, uint uFlags, int x, int y, int nReserved,
+        IntPtr hWnd, IntPtr prcRect);
 
     [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     internal struct PAINTSTRUCT
