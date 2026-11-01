@@ -4,8 +4,8 @@ namespace FluentZones.Core;
 public sealed class ZoneNode
 {
     public WindowInfo? Window { get; internal set; }
-    public ZoneNode? First { get; internal set; }
-    public ZoneNode? Second { get; internal set; }
+    public ZoneNode? First { get; init; }
+    public ZoneNode? Second { get; init; }
 
     /// <summary>true = 左右切（X 轴），false = 上下切（Y 轴）。</summary>
     public bool Horizontal { get; init; }
@@ -50,31 +50,16 @@ public readonly record struct ZoneGridPlan(ZoneWorkspace Workspace, WindowInfo? 
 /// <summary>一条可拖拽的分隔线。</summary>
 public sealed record ZoneDivider(ZoneNode Node, bool Horizontal, WindowRect Region);
 
-/// <summary>
-/// 工作区镜像/主窗位置：<see cref="None"/> = 左（默认），
-/// <see cref="Horizontal"/> = 右，<see cref="Vertical"/> = 下，<see cref="Both"/> = 右下。
-/// </summary>
-public enum Mirror
-{
-    None,
-    Horizontal,
-    Vertical,
-    Both,
-}
-
 /// <summary>交换窗口的结果。</summary>
 public enum ZoneSwapOutcome
 {
     /// <summary>交换后直接满足所有最小尺寸。</summary>
     Success,
 
-    /// <summary>交换后需要调整分隔线比例才能满足最小尺寸。</summary>
+    /// <summary>交换后需要调整与目标槽位相关的分隔线才能满足最小尺寸。</summary>
     NeedsDividerAdjustment,
 
-    /// <summary>交换后只有把目标槽位升为主窗（并镜像）才放得下。</summary>
-    NeedsMainSwap,
-
-    /// <summary>交换不可行（窗口比整块区域还大，或任何镜像都放不下）。</summary>
+    /// <summary>交换不可行（窗口比整块区域还大，或调整分界线也放不下）。</summary>
     Impossible,
 }
 
@@ -85,6 +70,4 @@ public enum ZoneSwapOutcome
 public readonly record struct ZoneSwapResult(
     ZoneSwapOutcome Outcome,
     ZoneWorkspace? Candidate,
-    Mirror MirrorState,
-    WindowInfo? NewMainWindow,
     int Generation);

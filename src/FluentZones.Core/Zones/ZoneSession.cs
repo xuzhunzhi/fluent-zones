@@ -33,7 +33,6 @@ public sealed class ZoneSession : IDisposable
     private ZoneDragHook? _dragHook;
     private WinEventWatcher? _watcher;
     private bool _syncQueued;
-    private Mirror _mirror = Mirror.None;
     private bool _swapInProgress;
 
     /// <summary>会话代次：Enter / Exit 时递增，异步对话框返回后据此放弃过期操作。</summary>
@@ -68,9 +67,6 @@ public sealed class ZoneSession : IDisposable
 
     /// <summary>工作区所在显示器。</summary>
     public IntPtr Monitor { get; private set; }
-
-    /// <summary>主窗位置/镜像状态；窗口增删、显示桌面、最大化都不重置。</summary>
-    public Mirror MirrorState => _mirror;
 
     /// <summary>标题栏拖拽交换进行中；期间暂停 LOCATIONCHANGE 拉回与窗口事件重排。</summary>
     public bool IsSwapInProgress => _swapInProgress;
@@ -117,8 +113,7 @@ public sealed class ZoneSession : IDisposable
         var generation = _sessionGeneration;
 
         var (workspace, swap) = CreateWorkspace(
-            kind, windows, _getArea(monitor), _getGap(), allowMainSwap: true,
-            mirrorState: Mirror.None);
+            kind, windows, _getArea(monitor), _getGap(), allowMainSwap: true);
         workspace.FitToMinimumSizes();
 
         if (swap != null)
@@ -160,7 +155,6 @@ public sealed class ZoneSession : IDisposable
 
         Kind = kind;
         Monitor = monitor;
-        _mirror = Mirror.None;
         Workspace = workspace;
         _windowHandles.Clear();
         foreach (var window in windows)
@@ -192,7 +186,6 @@ public sealed class ZoneSession : IDisposable
         RestoreBorders();
         _dragHook?.Hide();
         Workspace = null;
-        _mirror = Mirror.None;
         _swapInProgress = false;
         _windowHandles.Clear();
         _lastOrder.Clear();
@@ -237,82 +230,50 @@ public sealed class ZoneSession : IDisposable
     /// <summary>
     /// 试算把 <paramref name="first"/> 和 <paramref name="second"/> 两个窗口交换：
     /// 不修改当前工作区，返回候选工作区与结果；确认后调用 <see cref="CommitSwap"/>。
+    /// 主窗永远不动，只在必要时调与目标槽位相关的分界线。
     /// </summary>
     public ZoneSwapResult TrySwap(WindowInfo first, WindowInfo second)
     {
         var workspace = Workspace;
         if (workspace == null || first.Handle == second.Handle)
         {
-            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _mirror, null, _sessionGeneration);
+            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _sessionGeneration);
         }
 
         var ordered = workspace.WindowsInOrder();
-        if (!ordered.Any(w => w.Handle == first.Handle) ||
+        if (ordered.Count == 0 ||
+            !ordered.Any(w => w.Handle == first.Handle) ||
             !ordered.Any(w => w.Handle == second.Handle))
         {
-            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _mirror, null, _sessionGeneration);
+            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _sessionGeneration);
         }
 
-        // 窗口本身比整块可用区域还大：任何槽位/镜像都不可能。
+        // 窗口本身比整块可用区域还大：任何槽位都不可能。
         if (ExceedsArea(first, workspace.Area) || ExceedsArea(second, workspace.Area))
         {
-            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _mirror, null, _sessionGeneration);
+            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _sessionGeneration);
         }
 
-        var targetRect = workspace.Compute()
-            .FirstOrDefault(p => p.Window.Handle == second.Handle)?.Rect;
-        if (targetRect == null)
-        {
-            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _mirror, null, _sessionGeneration);
-        }
-
-        // 先试普通交换：交换 → Fit → 逐格校验。
         var swapped = workspace.Clone();
         if (!swapped.SwapWindows(first, second))
         {
-            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _mirror, null, _sessionGeneration);
+            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _sessionGeneration);
         }
 
-        var ratiosBeforeFit = Ratios(swapped.Root);
-        swapped.FitToMinimumSizes();
+        // 现状就装得下（不改任何分界线）。
         if (ZoneFits(swapped))
         {
-            var outcome = RatiosChanged(ratiosBeforeFit, swapped.Root)
-                ? ZoneSwapOutcome.NeedsDividerAdjustment
-                : ZoneSwapOutcome.Success;
-            return new ZoneSwapResult(outcome, swapped, swapped.MirrorState, null, _sessionGeneration);
+            return new ZoneSwapResult(ZoneSwapOutcome.Success, swapped, _sessionGeneration);
         }
 
-        // 目标槽位本来就是主窗：普通交换都放不下，换主窗也无处可升。
-        var targetIsMain = ordered[0].Handle == second.Handle;
-        if (targetIsMain)
+        // 主窗不动：只尝试调与目标槽位相关的分界线。
+        if (!swapped.TryAdjustDividerFor(first))
         {
-            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _mirror, null, _sessionGeneration);
-        }
-
-        // 目标槽位在右侧/下方/右下：把它升为主窗，原主窗降为副窗，再镜像过去。
-        var mirror = MirrorFor(targetRect.Value, workspace.Area);
-        if (mirror == Mirror.None)
-        {
-            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _mirror, null, _sessionGeneration);
-        }
-
-        var promoted = workspace.Clone();
-        if (!promoted.SwapWindows(first, second) ||
-            !promoted.PromoteToMain(first))
-        {
-            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _mirror, null, _sessionGeneration);
-        }
-
-        promoted.MirrorState = mirror;
-        promoted.FitToMinimumSizes();
-        if (!ZoneFits(promoted))
-        {
-            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _mirror, null, _sessionGeneration);
+            return new ZoneSwapResult(ZoneSwapOutcome.Impossible, null, _sessionGeneration);
         }
 
         return new ZoneSwapResult(
-            ZoneSwapOutcome.NeedsMainSwap, promoted, mirror, first, _sessionGeneration);
+            ZoneSwapOutcome.NeedsDividerAdjustment, swapped, _sessionGeneration);
     }
 
     /// <summary>确认一次交换：把候选工作区设为当前工作区并立即重排窗口。</summary>
@@ -333,7 +294,6 @@ public sealed class ZoneSession : IDisposable
             return false;
         }
 
-        _mirror = result.MirrorState;
         Workspace = result.Candidate;
         _dragHook?.Refresh(Workspace);
         Apply(Workspace);
@@ -343,48 +303,6 @@ public sealed class ZoneSession : IDisposable
     private static bool ExceedsArea(WindowInfo window, WindowRect area) =>
         Math.Max(window.MinWidth, 120) > area.Width ||
         Math.Max(window.MinHeight, 90) > area.Height;
-
-    /// <summary>目标槽位相对整块区域的象限：右/下/右下；左上返回 None（不升主窗）。</summary>
-    private static Mirror MirrorFor(WindowRect target, WindowRect area)
-    {
-        var right = target.Left + target.Width / 2 > area.Left + area.Width / 2;
-        var bottom = target.Top + target.Height / 2 > area.Top + area.Height / 2;
-
-        return right && bottom
-            ? Mirror.Both
-            : right
-                ? Mirror.Horizontal
-                : bottom
-                    ? Mirror.Vertical
-                    : Mirror.None;
-    }
-
-    private static List<double> Ratios(ZoneNode root)
-    {
-        var result = new List<double>();
-
-        void Walk(ZoneNode node)
-        {
-            if (node.IsLeaf)
-            {
-                return;
-            }
-
-            result.Add(node.Ratio);
-            Walk(node.First!);
-            Walk(node.Second!);
-        }
-
-        Walk(root);
-        return result;
-    }
-
-    private static bool RatiosChanged(List<double> before, ZoneNode root)
-    {
-        var after = Ratios(root);
-        return before.Count != after.Count ||
-               before.Where((ratio, index) => Math.Abs(ratio - after[index]) > 1e-9).Any();
-    }
 
     /// <summary>
     /// 工作区窗口：套上 DWM 强调色边框，并临时去掉 WS_THICKFRAME——
@@ -657,7 +575,7 @@ public sealed class ZoneSession : IDisposable
                 }
 
                 var (workspace, swap) = CreateWorkspace(
-                    Kind, candidates, area, gap, allowMainSwap, _mirror);
+                    Kind, candidates, area, gap, allowMainSwap);
                 workspace.FitToMinimumSizes();
 
                 if (swap != null)
@@ -696,7 +614,7 @@ public sealed class ZoneSession : IDisposable
                         var pinned = new List<WindowInfo>(latest.Count) { latestMain };
                         pinned.AddRange(latest.Where(w => w.Handle != latestMain.Handle));
                         var (swapped, stillNeedsSwap) = CreateWorkspace(
-                            Kind, pinned, area, gap, allowMainSwap: false, _mirror);
+                            Kind, pinned, area, gap, allowMainSwap: false);
                         swapped.FitToMinimumSizes();
                         if (stillNeedsSwap != null || !ZoneFits(swapped))
                         {
@@ -767,7 +685,7 @@ public sealed class ZoneSession : IDisposable
                     }
 
                     var attempt = CreateWorkspace(
-                        Kind, subset, area, gap, allowMainSwap: false, _mirror).Workspace;
+                        Kind, subset, area, gap, allowMainSwap: false).Workspace;
                     attempt.FitToMinimumSizes();
                     if (ZoneFits(attempt))
                     {
@@ -834,7 +752,7 @@ public sealed class ZoneSession : IDisposable
     /// </summary>
     private (ZoneWorkspace Workspace, WindowInfo? MainSwapRequested) CreateWorkspace(
         LayoutKind kind, IReadOnlyList<WindowInfo> windows, WindowRect area, int gap,
-        bool allowMainSwap = true, Mirror mirrorState = Mirror.None)
+        bool allowMainSwap = true)
     {
         ZoneWorkspace workspace;
         WindowInfo? swap = null;
@@ -846,7 +764,6 @@ public sealed class ZoneSession : IDisposable
             {
                 workspace = planned.Value.Workspace;
                 swap = planned.Value.MainSwapRequested;
-                workspace.MirrorState = mirrorState;
                 return (workspace, swap);
             }
         }
@@ -854,7 +771,6 @@ public sealed class ZoneSession : IDisposable
         workspace = kind == LayoutKind.Columns
             ? ZoneWorkspace.PlanColumns(windows, area, gap, _getColumnsLimit())
             : ZoneWorkspace.Create(kind, windows, area, gap);
-        workspace.MirrorState = mirrorState;
         return (workspace, swap);
     }
 }
