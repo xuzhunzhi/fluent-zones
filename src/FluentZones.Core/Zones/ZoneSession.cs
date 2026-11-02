@@ -34,7 +34,10 @@ public sealed class ZoneSession : IDisposable
     private ZoneTitleDragHook? _titleHook;
     private WinEventWatcher? _watcher;
     private bool _syncQueued;
+    private bool _candidateSyncQueued;
     private bool _swapInProgress;
+    private int _lastCrossMonitorCount;
+    private DateTime _lastCrossMonitorNotice;
 
     /// <summary>会话代次：Enter / Exit 时递增，异步对话框返回后据此放弃过期操作。</summary>
     private int _sessionGeneration;
@@ -517,13 +520,28 @@ public sealed class ZoneSession : IDisposable
         // 可能是程序自己 SetWindowPos 触发的事件，RealignAsync 比较后再决定要不要重排。
         if (eventType == NativeMethods.EVENT_OBJECT_LOCATIONCHANGE)
         {
-            if (_dragHook?.IsDragging == true || !_windowHandles.Contains(hwnd))
+            if (_dragHook?.IsDragging == true)
             {
                 return;
             }
 
-            _ = QueueRealignAsync();
+            if (_windowHandles.Contains(hwnd))
+            {
+                _ = QueueRealignAsync();
+                return;
+            }
+
+            // 可能是之前最小化的窗口刚刚恢复：它暂时还不在 _windowHandles 里，
+            // LOCATIONCHANGE 给了它第二次机会。去抖后让 SyncAsync 把它当 newcomer 处理。
+            _ = QueueCandidateSyncAsync(250);
             return;
+        }
+
+        if (eventType == NativeMethods.EVENT_OBJECT_SHOW && !_windowHandles.Contains(hwnd))
+        {
+            // 恢复最小化窗口时 SHOW 可能早于 IsIconic 变 false / 标题就绪；
+            // 立即 Sync 之外再延迟补一次，避免窗口永远错过加入工作区。
+            _ = QueueCandidateSyncAsync(300);
         }
 
         if (_syncQueued)
@@ -537,6 +555,43 @@ public sealed class ZoneSession : IDisposable
         if (_postToUi == null)
         {
             _ = SyncAsync();
+        }
+        else
+        {
+            _postToUi(() => _ = SyncAsync());
+        }
+    }
+
+    /// <summary>
+    /// 恢复的最小化窗口进入工作区的补一次 Sync：SHOW 当下可能仍 IsIconic/无标题，
+    /// 用延迟 + 去抖等它真正显示出来；期间窗口可能又关闭/退出，用 generation 放弃过期任务。
+    /// </summary>
+    private async Task QueueCandidateSyncAsync(int delayMs)
+    {
+        if (_candidateSyncQueued)
+        {
+            return;
+        }
+
+        _candidateSyncQueued = true;
+        var generation = _sessionGeneration;
+        try
+        {
+            await Task.Delay(delayMs);
+        }
+        finally
+        {
+            _candidateSyncQueued = false;
+        }
+
+        if (Workspace == null || _swapInProgress || generation != _sessionGeneration)
+        {
+            return;
+        }
+
+        if (_postToUi == null)
+        {
+            await SyncAsync();
         }
         else
         {
@@ -623,7 +678,22 @@ public sealed class ZoneSession : IDisposable
                 return;
             }
 
-            var windows = LayoutService.ZoneWindowsOnMonitor(_collectWindows(), Monitor);
+            var all = _collectWindows();
+            var windows = LayoutService.ZoneWindowsOnMonitor(all, Monitor);
+
+            // 恢复的窗口可能在另一台显示器上：当前工作区不跨屏，不能静默丢掉。
+            var otherMonitor = all
+                .Where(w => !w.CannotMove && w.Monitor != Monitor &&
+                            !_windowHandles.Contains(w.Handle))
+                .ToList();
+            if (otherMonitor.Count > 0)
+            {
+                NotifyCrossMonitor(otherMonitor.Count);
+            }
+            else
+            {
+                _lastCrossMonitorCount = 0;
+            }
 
             // 粘住上一次的槽位分配：窗口短暂消失（被别的工具隐藏/最小化）再回来时，
             // 不能当成新窗口排到最后（否则原本的主窗会被挤到小格子里）。
@@ -647,6 +717,11 @@ public sealed class ZoneSession : IDisposable
             var handles = new HashSet<IntPtr>(windows.Select(w => w.Handle));
             if (handles.SetEquals(_windowHandles))
             {
+                if (otherMonitor.Count > 0)
+                {
+                    NotifyCrossMonitor(otherMonitor.Count);
+                }
+
                 return;
             }
 
@@ -831,6 +906,22 @@ public sealed class ZoneSession : IDisposable
         {
             StatusRequested?.Invoke("更新工作区失败：" + ex.Message, ZoneStatusLevel.Error);
         }
+    }
+
+    private void NotifyCrossMonitor(int count)
+    {
+        var now = DateTime.UtcNow;
+        if (count == _lastCrossMonitorCount &&
+            (now - _lastCrossMonitorNotice).TotalSeconds < 5)
+        {
+            return;
+        }
+
+        _lastCrossMonitorCount = count;
+        _lastCrossMonitorNotice = now;
+        StatusRequested?.Invoke(
+            $"分区模式：{count} 个窗口在另一台显示器上，未加入当前工作区",
+            ZoneStatusLevel.Warn);
     }
 
     // ---------------- 规划 ----------------
