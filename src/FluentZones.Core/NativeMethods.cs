@@ -16,6 +16,7 @@ internal static class NativeMethods
     internal const uint SWP_NOMOVE = 0x0002;
     internal const uint SWP_NOZORDER = 0x0004;
     internal const uint SWP_NOACTIVATE = 0x0010;
+    internal const uint SWP_SHOWWINDOW = 0x0040;
     internal const uint SWP_NOOWNERZORDER = 0x0200;
 
     internal const int SW_SHOWNOACTIVATE = 4;
@@ -38,6 +39,10 @@ internal static class NativeMethods
     internal const int WM_LBUTTONDBLCLK = 0x0203;
     internal const int WM_SETCURSOR = 0x0020;
     internal const int WM_NCHITTEST = 0x0084;
+    internal const int WM_ERASEBKGND = 0x0014;
+    internal const int HTTRANSPARENT = -1;
+    internal const int CS_HREDRAW = 0x0002;
+    internal const int CS_VREDRAW = 0x0001;
     internal const int WM_MOUSEMOVE = 0x0200;
     internal const int WM_LBUTTONDOWN = 0x0201;
     internal const int WM_LBUTTONUP = 0x0202;

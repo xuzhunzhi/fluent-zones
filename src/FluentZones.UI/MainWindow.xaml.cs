@@ -86,6 +86,7 @@ public sealed partial class MainWindow : Window
             getColumnsLimit: () => _settings.ColumnsLimit,
             postToUi: PostToUi,
             getWhitelist: () => _settings.ZoneWhitelist);
+        _zones.PlaceholdersEnabled = true;
         _zones.PlaceRequested += placements =>
             _layouts.PlaceRects(placements.Select(p => (p.Window.Handle, p.Rect)));
         _zones.StatusRequested += OnZoneStatus;

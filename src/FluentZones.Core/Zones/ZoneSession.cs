@@ -36,6 +36,10 @@ public sealed class ZoneSession : IDisposable
     private readonly HashSet<uint> _fixedSkippedProcesses = new();
     private readonly HashSet<IntPtr> _unresizableHandles = new();
     private readonly Dictionary<IntPtr, int> _mismatchCounts = new();
+    private readonly Dictionary<IntPtr, (int Width, int Height)> _aspectLocked = new();
+    private readonly Dictionary<IntPtr, (int Width, int Height)> _lastActualSizes = new();
+    private readonly Dictionary<IntPtr, int> _aspectCounts = new();
+    private readonly ZonePlaceholderManager _placeholders = new();
 
     private ZoneDragHook? _dragHook;
     private ZoneTitleDragHook? _titleHook;
@@ -96,6 +100,16 @@ public sealed class ZoneSession : IDisposable
 
     /// <summary>状态栏消息。</summary>
     public event Action<string, ZoneStatusLevel>? StatusRequested;
+
+    /// <summary>是否真正创建占位窗口（UI 开启；无头测试保持 false）。</summary>
+    public bool PlaceholdersEnabled
+    {
+        get => _placeholders.Enabled;
+        set => _placeholders.Enabled = value;
+    }
+
+    /// <summary>当前占位窗口句柄（退出后应为空）。</summary>
+    public IReadOnlyList<IntPtr> PlaceholderHandles => _placeholders.Handles;
 
     /// <summary>
     /// 工作区放不下新窗口：UI 弹「最小化 N 个 / 先不加入」的对话框。
@@ -255,6 +269,10 @@ public sealed class ZoneSession : IDisposable
         _fixedSkippedProcesses.Clear();
         _unresizableHandles.Clear();
         _mismatchCounts.Clear();
+        _aspectLocked.Clear();
+        _lastActualSizes.Clear();
+        _aspectCounts.Clear();
+        _placeholders.Clear();
         RestoreWhitelistTopmost();
         _windowHandles.Clear();
         _lastOrder.Clear();
@@ -275,14 +293,44 @@ public sealed class ZoneSession : IDisposable
             return;
         }
 
-        var placements = workspace.Compute();
+        var (placements, gaps) = BuildLayout(workspace);
 
         // 先把窗口自己的缩放边框去掉，再按分区摆放：边距只由我们的分隔线调整
         SyncBorders(placements);
         PlaceRequested?.Invoke(placements);
+        _placeholders.Update(gaps);
 
         _lastOrder.Clear();
         _lastOrder.AddRange(workspace.WindowsInOrder().Select(w => w.Handle));
+    }
+
+    /// <summary>
+    /// 槽位矩形 → 实际摆放矩形：长宽比锁定窗口在槽位内等比缩放并居中，
+    /// 空余条带同时算成占位窗口。realign 也只以这个结果为目标。
+    /// </summary>
+    private (List<ZonePlacement> Placements, List<ZonePlaceholderSpec> Gaps) BuildLayout(
+        ZoneWorkspace workspace)
+    {
+        var source = workspace.Compute();
+        var placements = new List<ZonePlacement>(source.Count);
+        var gaps = new List<ZonePlaceholderSpec>();
+
+        foreach (var placement in source)
+        {
+            var rect = placement.Rect;
+            if (_aspectLocked.TryGetValue(placement.Window.Handle, out var aspect))
+            {
+                rect = ZoneAspectFit.Fit(placement.Rect, aspect.Width, aspect.Height);
+                foreach (var gap in ZoneAspectFit.Gaps(placement.Rect, rect))
+                {
+                    gaps.Add(new ZonePlaceholderSpec(gap, placement.Window.Title));
+                }
+            }
+
+            placements.Add(new ZonePlacement(placement.Window, rect));
+        }
+
+        return (placements, gaps);
     }
 
     /// <summary>
@@ -837,7 +885,7 @@ public sealed class ZoneSession : IDisposable
             return;
         }
 
-        foreach (var placement in Workspace.Compute())
+        foreach (var placement in BuildLayout(Workspace).Placements)
         {
             if (IsUnresizable(placement.Window))
             {
@@ -859,23 +907,81 @@ public sealed class ZoneSession : IDisposable
             if (!mismatch)
             {
                 _mismatchCounts.Remove(placement.Window.Handle);
+                _aspectCounts.Remove(placement.Window.Handle);
                 continue;
             }
 
-            _mismatchCounts.TryGetValue(placement.Window.Handle, out var count);
-            count++;
-            _mismatchCounts[placement.Window.Handle] = count;
-
-            // 连续两次都完全改不动：不是“程序自己微调”，而是固定/不可缩放窗口。
-            // 从工作区排除并提示，避免每秒 Apply 一次把点击吃掉。
-            if (count >= 2)
+            var handle = placement.Window.Handle;
+            if (_aspectLocked.ContainsKey(handle))
             {
-                _mismatchCounts.Remove(placement.Window.Handle);
-                await HandleAdaptiveUnresizableAsync(placement.Window);
-                await SyncAsync();
+                _lastRealign = DateTime.UtcNow;
+                Apply(Workspace);
                 return;
             }
 
+            // 实际尺寸和进入工作区前完全一样，且已经贴近最小尺寸：更像固定大小/不可缩放窗口，
+            // 走自适应排除；否则可能是长宽比锁定（窗口已经处在自己的比例尺寸）。
+            var sameAsOriginal =
+                actual.Value.Width == placement.Window.Bounds.Width &&
+                actual.Value.Height == placement.Window.Bounds.Height;
+            var fixedLike = sameAsOriginal &&
+                            actual.Value.Width <= Math.Max(placement.Window.MinWidth, 0) + 4 &&
+                            actual.Value.Height <= Math.Max(placement.Window.MinHeight, 0) + 4;
+            if (fixedLike)
+            {
+                _mismatchCounts.TryGetValue(handle, out var count);
+                count++;
+                _mismatchCounts[handle] = count;
+                if (count >= 2)
+                {
+                    _mismatchCounts.Remove(handle);
+                    await HandleAdaptiveUnresizableAsync(placement.Window);
+                    await SyncAsync();
+                    return;
+                }
+
+                _lastRealign = DateTime.UtcNow;
+                Apply(Workspace);
+                return;
+            }
+
+            _mismatchCounts.Remove(handle);
+
+            // 连续两次实际宽高比一致、且和槽位比例明显不同：长宽比锁定。
+            _lastActualSizes.TryGetValue(handle, out var previous);
+            var actualRatio = actual.Value.Height > 0
+                ? actual.Value.Width / (double)actual.Value.Height
+                : 0;
+            var previousRatio = previous.Height > 0
+                ? previous.Width / (double)previous.Height
+                : 0;
+            var stableRatio = previousRatio > 0 &&
+                              Math.Abs(actualRatio - previousRatio) <= 0.01;
+            if (stableRatio)
+            {
+                _aspectCounts.TryGetValue(handle, out var aspectCount);
+                aspectCount++;
+                _aspectCounts[handle] = aspectCount;
+                if (aspectCount >= 2)
+                {
+                    var planRatio = placement.Rect.Width / (double)placement.Rect.Height;
+                    if (Math.Abs(planRatio - actualRatio) > 0.02)
+                    {
+                        _aspectLocked[handle] = (actual.Value.Width, actual.Value.Height);
+                        _aspectCounts.Remove(handle);
+                        _lastActualSizes.Remove(handle);
+                        _lastRealign = DateTime.UtcNow;
+                        Apply(Workspace);
+                        return;
+                    }
+                }
+            }
+            else
+            {
+                _aspectCounts[handle] = 1;
+            }
+
+            _lastActualSizes[handle] = (actual.Value.Width, actual.Value.Height);
             _lastRealign = DateTime.UtcNow;
             Apply(Workspace);
             return;
