@@ -45,6 +45,8 @@ public sealed partial class MainWindow : Window
     private bool _allowClose;
     private bool _syncingCloseAction;
     private bool _syncingWhitelistAction;
+    private bool _syncingFixedAction;
+    private string? _entryWhitelistNotice;
     private TrayIcon? _tray;
 
     // 分区工作区的状态机（切分树、窗口句柄、显示器、布局类型、边框、拖拽钩子、窗口事件）都在 Core；
@@ -91,6 +93,7 @@ public sealed partial class MainWindow : Window
         _zones.MainSwapRequested = AskMainSwapAsync;
         _zones.SwapConfirmationRequested = AskSwapAsync;
         _zones.SwapCompleted += OnSwapCompleted;
+        _zones.UnresizableWindowRequested = AskUnresizableAsync;
         _zones.IsInteractionBusy = () => _prompting;
         // 只记第一次进入前的窗口位置：Ctrl+Alt+0 永远回到非工作区状态；
         // 放在 EnterAsync 校验通过、尚未移动窗口时执行，进入失败不会污染快照。
@@ -935,6 +938,12 @@ public sealed partial class MainWindow : Window
         {
             ZoneWhitelistAction.Minimize => 1,
             ZoneWhitelistAction.Topmost => 2,
+            _ => 0,
+        };
+        FixedWhitelistActionCombo.SelectedIndex = _settings.UnresizableWindowAction switch
+        {
+            UnresizableWindowAction.AddToWhitelist => 1,
+            UnresizableWindowAction.Skip => 2,
             _ => 0,
         };
         RebuildWhitelistRows();
@@ -1939,6 +1948,106 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private async Task<ZoneWhitelistDecision> AskUnresizableAsync(WindowInfo window)
+    {
+        if (_settings.UnresizableWindowAction == UnresizableWindowAction.AddToWhitelist)
+        {
+            AddWhitelistRule(window);
+            _entryWhitelistNotice = $"；已加入白名单：{window.Title}";
+            return ZoneWhitelistDecision.AddToWhitelist;
+        }
+
+        if (_settings.UnresizableWindowAction == UnresizableWindowAction.Skip)
+        {
+            return ZoneWhitelistDecision.Skip;
+        }
+
+        if (_prompting)
+        {
+            return ZoneWhitelistDecision.Skip;
+        }
+
+        _prompting = true;
+        try
+        {
+            CancelCapture(silent: true);
+            BringWindowToFront();
+
+            var noPrompt = new CheckBox
+            {
+                Content = "不再提示",
+                IsChecked = false,
+            };
+
+            var content = new StackPanel { Spacing = 8 };
+            content.Children.Add(new TextBlock
+            {
+                Text = $"「{window.Title}」不能缩放（最小/最大尺寸相同），无法放进工作区。\n\n" +
+                       "要把它加入工作区白名单（以后不参与分区）吗？",
+                TextWrapping = TextWrapping.Wrap,
+            });
+            content.Children.Add(noPrompt);
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = "固定大小窗口",
+                Content = content,
+                PrimaryButtonText = "加入白名单",
+                SecondaryButtonText = "这次先跳过",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            var choice = await dialog.ShowAsync();
+            var decision = choice == ContentDialogResult.Primary
+                ? ZoneWhitelistDecision.AddToWhitelist
+                : ZoneWhitelistDecision.Skip;
+
+            if (noPrompt.IsChecked == true)
+            {
+                _settings.UnresizableWindowAction = decision == ZoneWhitelistDecision.AddToWhitelist
+                    ? UnresizableWindowAction.AddToWhitelist
+                    : UnresizableWindowAction.Skip;
+                SettingsStore.Save(_settings);
+                SyncFixedWhitelistActionCombo();
+            }
+
+            if (decision == ZoneWhitelistDecision.AddToWhitelist)
+            {
+                AddWhitelistRule(window);
+                _entryWhitelistNotice = $"；已加入白名单：{window.Title}";
+            }
+
+            return decision;
+        }
+        finally
+        {
+            _prompting = false;
+        }
+    }
+
+    private void AddWhitelistRule(WindowInfo window) =>
+        AddWhitelistRule(ZoneWhitelist.ProcessRule(window), window.Title);
+
+    private void AddWhitelistRule(string rule, string display)
+    {
+        if (string.IsNullOrWhiteSpace(rule))
+        {
+            UpdateStatus("无法生成白名单规则", StatusLevel.Warn);
+            return;
+        }
+
+        if (!_settings.ZoneWhitelist.Any(r =>
+                r.Equals(rule, StringComparison.OrdinalIgnoreCase)))
+        {
+            _settings.ZoneWhitelist.Add(rule);
+            SettingsStore.Save(_settings);
+            RebuildWhitelistRows();
+        }
+
+        UpdateStatus($"已加入白名单：{display}", StatusLevel.Success);
+    }
+
     private void OnSwapCompleted(
         WindowInfo source, WindowInfo target, ZoneSwapOutcome outcome)
     {
@@ -2131,6 +2240,34 @@ public sealed partial class MainWindow : Window
         SettingsStore.Save(_settings);
     }
 
+    private void FixedWhitelistActionCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing || _syncingFixedAction)
+        {
+            return;
+        }
+
+        _settings.UnresizableWindowAction = FixedWhitelistActionCombo.SelectedIndex switch
+        {
+            1 => UnresizableWindowAction.AddToWhitelist,
+            2 => UnresizableWindowAction.Skip,
+            _ => UnresizableWindowAction.Ask,
+        };
+        SettingsStore.Save(_settings);
+    }
+
+    private void SyncFixedWhitelistActionCombo()
+    {
+        _syncingFixedAction = true;
+        FixedWhitelistActionCombo.SelectedIndex = _settings.UnresizableWindowAction switch
+        {
+            UnresizableWindowAction.AddToWhitelist => 1,
+            UnresizableWindowAction.Skip => 2,
+            _ => 0,
+        };
+        _syncingFixedAction = false;
+    }
+
     private void SyncWhitelistActionCombo()
     {
         _syncingWhitelistAction = true;
@@ -2260,14 +2397,7 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
-            if (!_settings.ZoneWhitelist.Any(r =>
-                    r.Equals(rule, StringComparison.OrdinalIgnoreCase)))
-            {
-                _settings.ZoneWhitelist.Add(rule);
-                SettingsStore.Save(_settings);
-                RebuildWhitelistRows();
-                UpdateStatus($"已加入工作区白名单：{rule}", StatusLevel.Success);
-            }
+            AddWhitelistRule(rule, rule);
         }
         finally
         {
@@ -2310,6 +2440,8 @@ public sealed partial class MainWindow : Window
     {
         try
         {
+            _entryWhitelistNotice = null;
+
             // 分区工作区只作用于鼠标所在显示器：不按 Scope 取窗口，也不跨屏回落
             var all = _layouts.GetZoneWindows();
             var monitor = _layouts.GetCursorMonitor();
@@ -2367,7 +2499,7 @@ public sealed partial class MainWindow : Window
                 : string.Empty;
             UpdateStatus(
                 $"分区模式（{LayoutNames.Display(effective)}，鼠标所在显示器）：拖动分隔线同时调整两侧窗口" +
-                $"（{windows.Count} 个），Ctrl+Alt+0 还原并退出{blockedNote}",
+                $"（{windows.Count} 个），Ctrl+Alt+0 还原并退出{blockedNote}{_entryWhitelistNotice}",
                 StatusLevel.Info);
         }
         catch (Exception ex)

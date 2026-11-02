@@ -30,6 +30,19 @@ public enum ZoneWhitelistAction
     Topmost,
 }
 
+/// <summary>识别到固定大小窗口时的处理方式。</summary>
+public enum UnresizableWindowAction
+{
+    /// <summary>每次询问。</summary>
+    Ask,
+
+    /// <summary>自动加入工作区白名单。</summary>
+    AddToWhitelist,
+
+    /// <summary>只跳过，不加入白名单。</summary>
+    Skip,
+}
+
 public sealed class HotkeySetting
 {
     public string Action { get; set; } = string.Empty;
@@ -75,6 +88,9 @@ public sealed class AppSettings
     /// <summary>进入工作区时白名单窗口的处理方式；默认每次询问。</summary>
     public ZoneWhitelistAction ZoneWhitelistAction { get; set; } = ZoneWhitelistAction.Ask;
 
+    /// <summary>识别到固定大小窗口时的处理方式；默认每次询问。</summary>
+    public UnresizableWindowAction UnresizableWindowAction { get; set; } = UnresizableWindowAction.Ask;
+
     /// <summary>各布局的"最多窗口数"，键是 <see cref="LayoutKind"/> 的名字；缺失或 0 表示不限制。</summary>
     public Dictionary<string, int> LayoutLimits { get; set; } = new();
 
@@ -112,6 +128,7 @@ public sealed class AppSettings
         ZoneModeEnabled = false,
         ZoneWhitelist = new List<string>(),
         ZoneWhitelistAction = ZoneWhitelistAction.Ask,
+        UnresizableWindowAction = UnresizableWindowAction.Ask,
         LayoutLimits = new Dictionary<string, int>
         {
             [nameof(LayoutKind.Grid)] = GridLimitDefault,

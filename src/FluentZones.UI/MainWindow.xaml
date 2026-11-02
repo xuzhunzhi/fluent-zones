@@ -309,6 +309,25 @@
                                     </ComboBox>
                                 </Grid>
                                 <StackPanel x:Name="WhitelistRowsHost" Spacing="4" />
+                                <Grid ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="2" VerticalAlignment="Center">
+                                        <TextBlock Text="固定大小窗口" />
+                                        <TextBlock Text="不能缩放、放不进槽位的窗口：询问加入白名单或仅跳过"
+                                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                    <ComboBox x:Name="FixedWhitelistActionCombo" Grid.Column="1" MinWidth="190"
+                                              VerticalAlignment="Center"
+                                              SelectionChanged="FixedWhitelistActionCombo_SelectionChanged">
+                                        <ComboBoxItem Content="每次询问" />
+                                        <ComboBoxItem Content="自动加入白名单" />
+                                        <ComboBoxItem Content="只跳过" />
+                                    </ComboBox>
+                                </Grid>
                                 <Button x:Name="AddWhitelistButton"
                                         Content="把当前前台窗口加入白名单"
                                         HorizontalAlignment="Left"
