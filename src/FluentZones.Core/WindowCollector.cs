@@ -126,7 +126,7 @@ public static class WindowCollector
             return null;
         }
 
-        GetSizeLimits(hWnd, out var minWidth, out var minHeight);
+        GetSizeLimits(hWnd, out var minWidth, out var minHeight, out var maxWidth, out var maxHeight);
 
         return new WindowInfo
         {
@@ -139,6 +139,8 @@ public static class WindowCollector
             Monitor = monitor,
             MinWidth = minWidth,
             MinHeight = minHeight,
+            MaxWidth = maxWidth,
+            MaxHeight = maxHeight,
             Dpi = NativeMethods.GetDpiForWindow(hWnd),
             CannotMove = !Elevation.CanControl(pid),
         };
@@ -254,10 +256,13 @@ public static class WindowCollector
     }
 
     /// <summary>问窗口自己要一个最小尺寸（WM_GETMINMAXINFO），顺便把不同 DPI 意识级别换算成物理像素。</summary>
-    private static void GetSizeLimits(IntPtr hWnd, out int minWidth, out int minHeight)
+    private static void GetSizeLimits(
+        IntPtr hWnd, out int minWidth, out int minHeight, out int maxWidth, out int maxHeight)
     {
         minWidth = 0;
         minHeight = 0;
+        maxWidth = 0;
+        maxHeight = 0;
 
         var info = default(NativeMethods.MINMAXINFO);
         var handled = NativeMethods.SendMessageTimeout(
@@ -295,6 +300,8 @@ public static class WindowCollector
 
         minWidth = (int)Math.Round(info.ptMinTrackSize.X * scale);
         minHeight = (int)Math.Round(info.ptMinTrackSize.Y * scale);
+        maxWidth = (int)Math.Round(info.ptMaxTrackSize.X * scale);
+        maxHeight = (int)Math.Round(info.ptMaxTrackSize.Y * scale);
     }
 }
 

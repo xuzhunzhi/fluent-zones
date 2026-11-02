@@ -315,7 +315,7 @@ public sealed class ZoneTitleDragHook : IDisposable
         }
 
         window = workspace.WindowsInOrder().FirstOrDefault(w => w.Handle == root);
-        if (window == null || window.CannotMove)
+        if (window == null || window.CannotMove || window.IsFixedSize)
         {
             return false;
         }

@@ -40,6 +40,20 @@ public sealed class WindowInfo
 
     public int MinHeight { get; init; }
 
+    /// <summary>窗口自己声明的最大跟踪尺寸（来自 WM_GETMINMAXINFO），0 表示没拿到。</summary>
+    public int MaxWidth { get; init; }
+
+    public int MaxHeight { get; init; }
+
+    /// <summary>
+    /// 固定大小窗口：最大尺寸和最小尺寸相同/几乎相同。它们不能按槽位缩放，
+    /// 不参与分区，否则 SetWindowPos 永远和计划差几像素，realign 会反复移动。
+    /// </summary>
+    public bool IsFixedSize =>
+        MaxWidth > 0 && MaxHeight > 0 &&
+        MaxWidth <= Math.Max(MinWidth, 0) + 4 &&
+        MaxHeight <= Math.Max(MinHeight, 0) + 4;
+
     /// <summary>窗口所在显示器的 DPI（用于把"舒适宽度"换算成物理像素）。</summary>
     public uint Dpi { get; init; }
 

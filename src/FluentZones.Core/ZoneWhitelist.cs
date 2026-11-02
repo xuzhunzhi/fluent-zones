@@ -3,6 +3,16 @@ using System.Diagnostics;
 
 namespace FluentZones.Core;
 
+/// <summary>用户对“固定大小窗口加入白名单”的选择。</summary>
+public enum ZoneWhitelistDecision
+{
+    /// <summary>加入白名单（UI 负责写入规则）。</summary>
+    AddToWhitelist,
+
+    /// <summary>本次跳过，不加入白名单。</summary>
+    Skip,
+}
+
 /// <summary>
 /// 工作区白名单：规则是进程名（不含 .exe）或窗口标题子串，大小写不敏感。
 /// 匹配的窗口不进入分区、不参与重排；一次性布局不受影响。

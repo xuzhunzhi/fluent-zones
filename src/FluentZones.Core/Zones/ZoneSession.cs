@@ -32,6 +32,10 @@ public sealed class ZoneSession : IDisposable
     private readonly List<IntPtr> _lastOrder = new();
     private readonly List<(IntPtr Handle, bool WasTopmost)> _whitelistTopmost = new();
     private readonly HashSet<IntPtr> _initialWhitelistHandles = new();
+    private readonly HashSet<uint> _fixedAskedProcesses = new();
+    private readonly HashSet<uint> _fixedSkippedProcesses = new();
+    private readonly HashSet<IntPtr> _unresizableHandles = new();
+    private readonly Dictionary<IntPtr, int> _mismatchCounts = new();
 
     private ZoneDragHook? _dragHook;
     private ZoneTitleDragHook? _titleHook;
@@ -40,6 +44,7 @@ public sealed class ZoneSession : IDisposable
     private bool _candidateSyncQueued;
     private bool _swapInProgress;
     private bool _whitelistIgnoredNotified;
+    private bool _fixedSizeNotified;
     private int _lastCrossMonitorCount;
     private DateTime _lastCrossMonitorNotice;
 
@@ -113,6 +118,12 @@ public sealed class ZoneSession : IDisposable
     /// <summary>交换已应用（UI 用来弹 toast）。</summary>
     public event Action<WindowInfo, WindowInfo, ZoneSwapOutcome>? SwapCompleted;
 
+    /// <summary>
+    /// 识别到固定大小（不可缩放）窗口：UI 询问是否加入白名单。
+    /// 返回 AddToWhitelist 时 UI 负责保存规则；Skip 只跳过当前会话。
+    /// </summary>
+    public Func<WindowInfo, Task<ZoneWhitelistDecision>>? UnresizableWindowRequested { get; set; }
+
     /// <summary>UI 正在弹对话框：此时不要重排，避免和对话流程打架。</summary>
     public Func<bool>? IsInteractionBusy { get; set; }
 
@@ -131,6 +142,8 @@ public sealed class ZoneSession : IDisposable
         _sessionGeneration++;
         var generation = _sessionGeneration;
         _whitelistIgnoredNotified = false;
+
+        windows = await FilterUnresizableAsync(windows, monitor);
 
         // 白名单窗口不进入槽位（UI 已经过滤过一次，这里兜底；一次性布局不受影响）。
         _initialWhitelistHandles.Clear();
@@ -237,6 +250,11 @@ public sealed class ZoneSession : IDisposable
         _swapInProgress = false;
         _whitelistIgnoredNotified = false;
         _initialWhitelistHandles.Clear();
+        _fixedSizeNotified = false;
+        _fixedAskedProcesses.Clear();
+        _fixedSkippedProcesses.Clear();
+        _unresizableHandles.Clear();
+        _mismatchCounts.Clear();
         RestoreWhitelistTopmost();
         _windowHandles.Clear();
         _lastOrder.Clear();
@@ -342,6 +360,60 @@ public sealed class ZoneSession : IDisposable
         {
             _initialWhitelistHandles.Add(window.Handle);
         }
+    }
+
+    private bool IsUnresizable(WindowInfo window) =>
+        window.IsFixedSize || _unresizableHandles.Contains(window.Handle);
+
+    /// <summary>
+    /// 过滤固定大小窗口，并对每个进程最多询问一次是否加入白名单。
+    /// 无论用户选择加入还是跳过，这些窗口都不会进入当前工作区。
+    /// </summary>
+    private async Task<List<WindowInfo>> FilterUnresizableAsync(
+        IReadOnlyList<WindowInfo> windows, IntPtr monitor)
+    {
+        var fixedWindows = windows
+            .Where(w => !w.CannotMove && w.Monitor == monitor &&
+                        IsUnresizable(w) && !IsWhitelisted(w))
+            .ToList();
+        var addedToWhitelist = false;
+
+        foreach (var group in fixedWindows.GroupBy(w => w.ProcessId))
+        {
+            var first = group.First();
+            if (_fixedAskedProcesses.Contains(first.ProcessId) ||
+                _fixedSkippedProcesses.Contains(first.ProcessId))
+            {
+                continue;
+            }
+
+            _fixedAskedProcesses.Add(first.ProcessId);
+            var decision = ZoneWhitelistDecision.Skip;
+            if (UnresizableWindowRequested != null)
+            {
+                try
+                {
+                    decision = await UnresizableWindowRequested(first);
+                }
+                catch
+                {
+                    decision = ZoneWhitelistDecision.Skip;
+                }
+            }
+
+            _fixedSkippedProcesses.Add(first.ProcessId);
+            addedToWhitelist |= decision == ZoneWhitelistDecision.AddToWhitelist;
+        }
+
+        if (fixedWindows.Count > 0 && !_fixedSizeNotified && !addedToWhitelist)
+        {
+            _fixedSizeNotified = true;
+            StatusRequested?.Invoke(
+                $"分区模式：固定大小窗口不参与分区：{fixedWindows[0].Title}",
+                ZoneStatusLevel.Warn);
+        }
+
+        return windows.Where(w => !IsUnresizable(w)).ToList();
     }
 
     private bool IsWhitelisted(WindowInfo window) =>
@@ -767,24 +839,79 @@ public sealed class ZoneSession : IDisposable
 
         foreach (var placement in Workspace.Compute())
         {
+            if (IsUnresizable(placement.Window))
+            {
+                continue;
+            }
+
             var actual = WindowOps.GetVisibleBounds(placement.Window.Handle);
             if (actual == null)
             {
                 continue;
             }
 
-            if (Math.Abs(actual.Value.Left - placement.Rect.Left) > 6 ||
+            var mismatch =
+                Math.Abs(actual.Value.Left - placement.Rect.Left) > 6 ||
                 Math.Abs(actual.Value.Top - placement.Rect.Top) > 6 ||
                 Math.Abs(actual.Value.Width - placement.Rect.Width) > 6 ||
-                Math.Abs(actual.Value.Height - placement.Rect.Height) > 6)
+                Math.Abs(actual.Value.Height - placement.Rect.Height) > 6;
+
+            if (!mismatch)
             {
-                _lastRealign = DateTime.UtcNow;
-                Apply(Workspace);
+                _mismatchCounts.Remove(placement.Window.Handle);
+                continue;
+            }
+
+            _mismatchCounts.TryGetValue(placement.Window.Handle, out var count);
+            count++;
+            _mismatchCounts[placement.Window.Handle] = count;
+
+            // 连续两次都完全改不动：不是“程序自己微调”，而是固定/不可缩放窗口。
+            // 从工作区排除并提示，避免每秒 Apply 一次把点击吃掉。
+            if (count >= 2)
+            {
+                _mismatchCounts.Remove(placement.Window.Handle);
+                await HandleAdaptiveUnresizableAsync(placement.Window);
+                await SyncAsync();
                 return;
             }
+
+            _lastRealign = DateTime.UtcNow;
+            Apply(Workspace);
+            return;
         }
 
         await Task.CompletedTask;
+    }
+
+    private async Task HandleAdaptiveUnresizableAsync(WindowInfo window)
+    {
+        _unresizableHandles.Add(window.Handle);
+        if (!_fixedAskedProcesses.Contains(window.ProcessId))
+        {
+            _fixedAskedProcesses.Add(window.ProcessId);
+            var decision = ZoneWhitelistDecision.Skip;
+            if (UnresizableWindowRequested != null)
+            {
+                try
+                {
+                    decision = await UnresizableWindowRequested(window);
+                }
+                catch
+                {
+                    decision = ZoneWhitelistDecision.Skip;
+                }
+            }
+
+            _fixedSkippedProcesses.Add(window.ProcessId);
+            if (decision != ZoneWhitelistDecision.AddToWhitelist && !_fixedSizeNotified)
+            {
+                _fixedSizeNotified = true;
+                StatusRequested?.Invoke(
+                    $"分区模式：固定大小窗口不参与分区：{window.Title}",
+                    ZoneStatusLevel.Warn);
+            }
+        }
     }
 
     private async Task SyncAsync()
@@ -803,11 +930,10 @@ public sealed class ZoneSession : IDisposable
                 return;
             }
 
+            var all = await FilterUnresizableAsync(_collectWindows(), Monitor);
             var rules = _getWhitelist?.Invoke();
             bool Whitelisted(WindowInfo window) =>
                 rules != null && ZoneWhitelist.IsWhitelisted(window, rules);
-
-            var all = _collectWindows();
             var whitelistedOnMonitor = all
                 .Where(w => !w.CannotMove && w.Monitor == Monitor && Whitelisted(w))
                 .ToList();
