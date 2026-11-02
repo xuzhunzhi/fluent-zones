@@ -353,7 +353,7 @@
                         </Border>
                     </StackPanel>
 
-                    <TextBlock Text="MIT License · 如果觉得好用，可以在 Microsoft Store 里以 ¥12 支持一下开发。"
+                    <TextBlock Text="MIT License"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                TextWrapping="Wrap" />
