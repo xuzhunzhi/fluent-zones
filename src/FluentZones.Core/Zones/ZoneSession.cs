@@ -299,6 +299,22 @@ public sealed class ZoneSession : IDisposable
         SyncBorders(placements);
         PlaceRequested?.Invoke(placements);
         _placeholders.Update(gaps);
+        if (gaps.Count > 0)
+        {
+            LayoutLog.Write(new[]
+            {
+                "=== aspect placeholders",
+                $"  gaps={string.Join(";", gaps.Select(g => g.Rect.ToString()))}",
+                $"  created={_placeholders.Handles.Count}",
+            });
+        }
+
+        // 不依赖窗口后续再发 LOCATIONCHANGE：Apply 后主动补一次观测，
+        // 否则长宽比锁定窗口只会在第一次 realign 后被观测一次，永远收敛不到适配矩形。
+        if (_postToUi != null)
+        {
+            _ = QueueRealignAsync(250, force: true);
+        }
 
         _lastOrder.Clear();
         _lastOrder.AddRange(workspace.WindowsInOrder().Select(w => w.Handle));
@@ -848,8 +864,11 @@ public sealed class ZoneSession : IDisposable
     private bool _realignQueued;
     private DateTime _lastRealign;
 
-    /// <summary>合并高频 LOCATIONCHANGE，延迟 150ms 再比对，避免和外部程序互相抖。</summary>
-    private async Task QueueRealignAsync()
+    /// <summary>
+    /// 合并高频 LOCATIONCHANGE，延迟 150ms 再比对；<paramref name="force"/> 用于
+    /// Apply 后主动探一次（不依赖窗口是否再发 LOCATIONCHANGE）。
+    /// </summary>
+    private async Task QueueRealignAsync(int delayMs = 150, bool force = false)
     {
         if (_realignQueued)
         {
@@ -858,19 +877,19 @@ public sealed class ZoneSession : IDisposable
 
         _realignQueued = true;
         var generation = _sessionGeneration;
-        await Task.Delay(150);
+        await Task.Delay(delayMs);
 
         if (_postToUi == null)
         {
-            await RealignAsync(generation);
+            await RealignAsync(generation, force);
         }
         else
         {
-            _postToUi(() => _ = RealignAsync(generation));
+            _postToUi(() => _ = RealignAsync(generation, force));
         }
     }
 
-    private async Task RealignAsync(int generation)
+    private async Task RealignAsync(int generation, bool force = false)
     {
         _realignQueued = false;
 
@@ -880,8 +899,10 @@ public sealed class ZoneSession : IDisposable
             return;
         }
 
-        // 限频：一秒钟最多纠正一次，防止和会自行改尺寸的窗口来回打架
-        if ((DateTime.UtcNow - _lastRealign).TotalMilliseconds < 1000)
+        // 限频：一秒钟最多纠正一次，防止和会自行改尺寸的窗口来回打架；
+        // Apply 后的主动探测可以绕过它，否则只发一次 LOCATIONCHANGE 的窗口
+        // 永远等不到第二次观测，长宽比锁定就检测不出来。
+        if (!force && (DateTime.UtcNow - _lastRealign).TotalMilliseconds < 1000)
         {
             return;
         }
@@ -957,7 +978,7 @@ public sealed class ZoneSession : IDisposable
                 ? previous.Width / (double)previous.Height
                 : 0;
             var stableRatio = previousRatio > 0 &&
-                              Math.Abs(actualRatio - previousRatio) <= 0.01;
+                              Math.Abs(actualRatio - previousRatio) <= 0.02;
             if (stableRatio)
             {
                 _aspectCounts.TryGetValue(handle, out var aspectCount);
