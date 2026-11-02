@@ -267,6 +267,34 @@ public sealed class ZoneSession : IDisposable
         _lastOrder.AddRange(workspace.WindowsInOrder().Select(w => w.Handle));
     }
 
+    /// <summary>
+    /// 从原始 Z 序（前台在前）从后往前选最久未用的旧窗口作为最小化候选；
+    /// newcomers 永远排除，已经在上一轮 victims 里的窗口也不重复。
+    /// </summary>
+    internal static List<WindowInfo> PickOverflowVictims(
+        IReadOnlyList<WindowInfo> zOrder,
+        IReadOnlyList<WindowInfo> candidates,
+        IReadOnlyList<WindowInfo> newcomers)
+    {
+        var candidateHandles = candidates.Select(w => w.Handle).ToHashSet();
+        var newcomerHandles = newcomers.Select(w => w.Handle).ToHashSet();
+        return zOrder
+            .AsEnumerable()
+            .Reverse()
+            .Where(w => candidateHandles.Contains(w.Handle) &&
+                        !newcomerHandles.Contains(w.Handle))
+            .ToList();
+    }
+
+    private void UpdateWindowHandles(IEnumerable<WindowInfo> windows)
+    {
+        _windowHandles.Clear();
+        foreach (var window in windows)
+        {
+            _windowHandles.Add(window.Handle);
+        }
+    }
+
     // ---------------- 白名单 ----------------
 
     /// <summary>进入工作区时把白名单窗口置顶，并记录原来的 topmost 状态，退出时恢复。</summary>
@@ -796,6 +824,7 @@ public sealed class ZoneSession : IDisposable
             var windows = LayoutService.ZoneWindowsOnMonitor(all, Monitor)
                 .Where(w => !Whitelisted(w))
                 .ToList();
+            var zOrder = windows.ToList();
 
             // 恢复的窗口可能在另一台显示器上：当前工作区不跨屏，不能静默丢掉。
             // 白名单窗口本来就不参与，不算跨屏候选。
@@ -842,12 +871,7 @@ public sealed class ZoneSession : IDisposable
                 return;
             }
 
-            var newcomers = windows.Where(w => !_windowHandles.Contains(w.Handle)).ToList();
-            _windowHandles.Clear();
-            foreach (var handle in handles)
-            {
-                _windowHandles.Add(handle);
-            }
+            var newcomers = zOrder.Where(w => !_windowHandles.Contains(w.Handle)).ToList();
 
             var gap = _getGap();
             var area = _getArea(Monitor);
@@ -912,15 +936,10 @@ public sealed class ZoneSession : IDisposable
                             return;
                         }
 
-                        _windowHandles.Clear();
-                        foreach (var window in latest)
-                        {
-                            _windowHandles.Add(window.Handle);
-                        }
-
                         Workspace = swapped;
                         _dragHook?.Refresh(swapped);
                         Apply(swapped);
+                        UpdateWindowHandles(latest);
 
                         var swapChange = newcomers.Count > 0
                             ? $"新窗口已加入（{latest.Count} 个，已换主窗）"
@@ -939,6 +958,7 @@ public sealed class ZoneSession : IDisposable
                     Workspace = workspace;
                     _dragHook?.Refresh(workspace);
                     Apply(workspace);
+                    UpdateWindowHandles(candidates);
 
                     var change = newcomers.Count > 0
                         ? $"新窗口已加入（{candidates.Count} 个）"
@@ -958,10 +978,9 @@ public sealed class ZoneSession : IDisposable
                     return;
                 }
 
-                // 放不下：从 Z 序最底层开始找「最小化几个才能排下」（新窗口永远保留）
-                var removable = candidates.AsEnumerable().Reverse()
-                    .Where(w => !newcomers.Any(n => n.Handle == w.Handle))
-                    .ToList();
+                // 放不下：从**原始 Z 序**最底层开始找「最小化几个才能排下」，
+                // 最久没用的旧窗口优先；新窗口永远不进入 victims，拒绝后下次仍按 newcomer 处理。
+                var removable = PickOverflowVictims(zOrder, candidates, newcomers);
 
                 List<WindowInfo>? victims = null;
                 for (var k = 1; k <= removable.Count; k++)
