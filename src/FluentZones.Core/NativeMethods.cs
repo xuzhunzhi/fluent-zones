@@ -481,6 +481,9 @@ internal static class NativeMethods
     internal const uint SRCCOPY = 0x00CC0020;
     internal const int HALFTONE = 4;
 
+    internal static readonly IntPtr HWND_TOPMOST = new(-1);
+    internal static readonly IntPtr HWND_NOTOPMOST = new(-2);
+
     [DllImport("gdi32.dll")]
     internal static extern bool BitBlt(
         IntPtr hdcDest, int xDest, int yDest, int width, int height,

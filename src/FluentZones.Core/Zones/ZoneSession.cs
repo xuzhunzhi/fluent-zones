@@ -23,12 +23,15 @@ public sealed class ZoneSession : IDisposable
     private readonly Func<IntPtr, WindowRect> _getArea;
     private readonly Func<int> _getGap;
     private readonly Func<int> _getColumnsLimit;
+    private readonly Func<IReadOnlyList<string>>? _getWhitelist;
     private readonly Action<Action>? _postToUi;
 
     private readonly HashSet<IntPtr> _windowHandles = new();
     private readonly HashSet<IntPtr> _bordered = new();
     private readonly Dictionary<IntPtr, int> _styles = new();
     private readonly List<IntPtr> _lastOrder = new();
+    private readonly List<(IntPtr Handle, bool WasTopmost)> _whitelistTopmost = new();
+    private readonly HashSet<IntPtr> _initialWhitelistHandles = new();
 
     private ZoneDragHook? _dragHook;
     private ZoneTitleDragHook? _titleHook;
@@ -36,6 +39,7 @@ public sealed class ZoneSession : IDisposable
     private bool _syncQueued;
     private bool _candidateSyncQueued;
     private bool _swapInProgress;
+    private bool _whitelistIgnoredNotified;
     private int _lastCrossMonitorCount;
     private DateTime _lastCrossMonitorNotice;
 
@@ -54,13 +58,15 @@ public sealed class ZoneSession : IDisposable
         Func<IntPtr, WindowRect> getArea,
         Func<int> getGap,
         Func<int>? getColumnsLimit = null,
-        Action<Action>? postToUi = null)
+        Action<Action>? postToUi = null,
+        Func<IReadOnlyList<string>>? getWhitelist = null)
     {
         _collectWindows = collectWindows;
         _getArea = getArea;
         _getGap = getGap;
         _getColumnsLimit = getColumnsLimit ?? (() => 0);
         _postToUi = postToUi;
+        _getWhitelist = getWhitelist;
     }
 
     /// <summary>当前工作区；null = 不在工作区里。</summary>
@@ -124,6 +130,31 @@ public sealed class ZoneSession : IDisposable
     {
         _sessionGeneration++;
         var generation = _sessionGeneration;
+        _whitelistIgnoredNotified = false;
+
+        // 白名单窗口不进入槽位（UI 已经过滤过一次，这里兜底；一次性布局不受影响）。
+        _initialWhitelistHandles.Clear();
+        var rules = _getWhitelist?.Invoke();
+        if (rules != null)
+        {
+            foreach (var window in windows)
+            {
+                if (ZoneWhitelist.IsWhitelisted(window, rules))
+                {
+                    _initialWhitelistHandles.Add(window.Handle);
+                }
+            }
+
+            windows = windows
+                .Where(w => !ZoneWhitelist.IsWhitelisted(w, rules))
+                .ToList();
+        }
+
+        if (windows.Count == 0)
+        {
+            StatusRequested?.Invoke("分区模式：没有可参与分区的窗口", ZoneStatusLevel.Warn);
+            return false;
+        }
 
         var (workspace, swap) = CreateWorkspace(
             kind, windows, _getArea(monitor), _getGap(), allowMainSwap: true);
@@ -204,6 +235,9 @@ public sealed class ZoneSession : IDisposable
         _titleHook?.Hide();
         Workspace = null;
         _swapInProgress = false;
+        _whitelistIgnoredNotified = false;
+        _initialWhitelistHandles.Clear();
+        RestoreWhitelistTopmost();
         _windowHandles.Clear();
         _lastOrder.Clear();
 
@@ -231,6 +265,69 @@ public sealed class ZoneSession : IDisposable
 
         _lastOrder.Clear();
         _lastOrder.AddRange(workspace.WindowsInOrder().Select(w => w.Handle));
+    }
+
+    // ---------------- 白名单 ----------------
+
+    /// <summary>进入工作区时把白名单窗口置顶，并记录原来的 topmost 状态，退出时恢复。</summary>
+    public void PrepareWhitelistTopmost(IReadOnlyList<WindowInfo> windows)
+    {
+        RestoreWhitelistTopmost();
+        foreach (var window in windows)
+        {
+            var style = NativeMethods.GetWindowLong(window.Handle, NativeMethods.GWL_EXSTYLE);
+            var wasTopmost = (style & NativeMethods.WS_EX_TOPMOST) != 0;
+            _whitelistTopmost.Add((window.Handle, wasTopmost));
+            NativeMethods.SetWindowPos(
+                window.Handle, NativeMethods.HWND_TOPMOST, 0, 0, 0, 0,
+                NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE |
+                NativeMethods.SWP_NOACTIVATE);
+        }
+    }
+
+    /// <summary>恢复进入工作区前白名单窗口的 topmost 状态；可重复调用。</summary>
+    public void RestoreWhitelistTopmost()
+    {
+        foreach (var (handle, wasTopmost) in _whitelistTopmost)
+        {
+            if (!NativeMethods.IsWindow(handle))
+            {
+                continue;
+            }
+
+            NativeMethods.SetWindowPos(
+                handle,
+                wasTopmost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST,
+                0, 0, 0, 0,
+                NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE |
+                NativeMethods.SWP_NOACTIVATE);
+        }
+
+        _whitelistTopmost.Clear();
+    }
+
+    /// <summary>UI 在进入时已经处理过白名单窗口：记录它们，避免随后第一次 Sync 再提示一次。</summary>
+    public void MarkInitialWhitelist(IEnumerable<WindowInfo> windows)
+    {
+        _initialWhitelistHandles.Clear();
+        foreach (var window in windows)
+        {
+            _initialWhitelistHandles.Add(window.Handle);
+        }
+    }
+
+    private bool IsWhitelisted(WindowInfo window) =>
+        _getWhitelist?.Invoke() is { } rules && ZoneWhitelist.IsWhitelisted(window, rules);
+
+    private void NotifyWhitelistIgnored()
+    {
+        if (_whitelistIgnoredNotified)
+        {
+            return;
+        }
+
+        _whitelistIgnoredNotified = true;
+        StatusRequested?.Invoke("分区模式：白名单窗口已忽略", ZoneStatusLevel.Info);
     }
 
     // ---------------- 槽位交换 ----------------
@@ -678,13 +775,33 @@ public sealed class ZoneSession : IDisposable
                 return;
             }
 
+            var rules = _getWhitelist?.Invoke();
+            bool Whitelisted(WindowInfo window) =>
+                rules != null && ZoneWhitelist.IsWhitelisted(window, rules);
+
             var all = _collectWindows();
-            var windows = LayoutService.ZoneWindowsOnMonitor(all, Monitor);
+            var whitelistedOnMonitor = all
+                .Where(w => !w.CannotMove && w.Monitor == Monitor && Whitelisted(w))
+                .ToList();
+            if (whitelistedOnMonitor.Count > 0)
+            {
+                var newlyAppeared = whitelistedOnMonitor
+                    .Any(w => !_initialWhitelistHandles.Contains(w.Handle));
+                if (newlyAppeared)
+                {
+                    NotifyWhitelistIgnored();
+                }
+            }
+
+            var windows = LayoutService.ZoneWindowsOnMonitor(all, Monitor)
+                .Where(w => !Whitelisted(w))
+                .ToList();
 
             // 恢复的窗口可能在另一台显示器上：当前工作区不跨屏，不能静默丢掉。
+            // 白名单窗口本来就不参与，不算跨屏候选。
             var otherMonitor = all
                 .Where(w => !w.CannotMove && w.Monitor != Monitor &&
-                            !_windowHandles.Contains(w.Handle))
+                            !_windowHandles.Contains(w.Handle) && !Whitelisted(w))
                 .ToList();
             if (otherMonitor.Count > 0)
             {

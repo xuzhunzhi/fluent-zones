@@ -44,6 +44,7 @@ public sealed partial class MainWindow : Window
     private bool _closePrompting;
     private bool _allowClose;
     private bool _syncingCloseAction;
+    private bool _syncingWhitelistAction;
     private TrayIcon? _tray;
 
     // 分区工作区的状态机（切分树、窗口句柄、显示器、布局类型、边框、拖拽钩子、窗口事件）都在 Core；
@@ -81,7 +82,8 @@ public sealed partial class MainWindow : Window
             getArea: ZoneArea,
             getGap: () => CurrentOptions().Gap,
             getColumnsLimit: () => _settings.ColumnsLimit,
-            postToUi: PostToUi);
+            postToUi: PostToUi,
+            getWhitelist: () => _settings.ZoneWhitelist);
         _zones.PlaceRequested += placements =>
             _layouts.PlaceRects(placements.Select(p => (p.Window.Handle, p.Rect)));
         _zones.StatusRequested += OnZoneStatus;
@@ -928,6 +930,14 @@ public sealed partial class MainWindow : Window
             CloseAction.Exit => 2,
             _ => 0,
         };
+
+        WhitelistActionCombo.SelectedIndex = _settings.ZoneWhitelistAction switch
+        {
+            ZoneWhitelistAction.Minimize => 1,
+            ZoneWhitelistAction.Topmost => 2,
+            _ => 0,
+        };
+        RebuildWhitelistRows();
     }
 
     private void Nav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
@@ -1827,6 +1837,108 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private async Task<bool> AskWhitelistAsync(IReadOnlyList<WindowInfo> windows)
+    {
+        if (_settings.ZoneWhitelistAction == ZoneWhitelistAction.Minimize)
+        {
+            foreach (var window in windows)
+            {
+                WindowOps.Minimize(window.Handle);
+            }
+
+            return true;
+        }
+
+        if (_settings.ZoneWhitelistAction == ZoneWhitelistAction.Topmost)
+        {
+            _zones.PrepareWhitelistTopmost(windows);
+            return true;
+        }
+
+        if (_prompting)
+        {
+            UpdateStatus("正在处理另一个对话框，请稍后再试", StatusLevel.Warn);
+            return false;
+        }
+
+        _prompting = true;
+
+        try
+        {
+            CancelCapture(silent: true);
+            BringWindowToFront();
+
+            var names = string.Join("、", windows.Take(5).Select(w => w.Title));
+            if (windows.Count > 5)
+            {
+                names += $" 等 {windows.Count} 个";
+            }
+
+            var noPrompt = new CheckBox
+            {
+                Content = "不再提示",
+                IsChecked = false,
+            };
+
+            var content = new StackPanel { Spacing = 8 };
+            content.Children.Add(new TextBlock
+            {
+                Text = $"当前显示器上有白名单窗口：{names}。\n\n" +
+                       "它们不会进入分区，也不参与重排。请选择处理方式：",
+                TextWrapping = TextWrapping.Wrap,
+            });
+            content.Children.Add(noPrompt);
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = "白名单窗口",
+                Content = content,
+                PrimaryButtonText = "最小化它们",
+                SecondaryButtonText = "置顶，自己处理",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            var choice = await dialog.ShowAsync();
+            if (choice == ContentDialogResult.Primary)
+            {
+                if (noPrompt.IsChecked == true)
+                {
+                    _settings.ZoneWhitelistAction = ZoneWhitelistAction.Minimize;
+                    SettingsStore.Save(_settings);
+                    SyncWhitelistActionCombo();
+                }
+
+                foreach (var window in windows)
+                {
+                    WindowOps.Minimize(window.Handle);
+                }
+
+                return true;
+            }
+
+            if (choice == ContentDialogResult.Secondary)
+            {
+                if (noPrompt.IsChecked == true)
+                {
+                    _settings.ZoneWhitelistAction = ZoneWhitelistAction.Topmost;
+                    SettingsStore.Save(_settings);
+                    SyncWhitelistActionCombo();
+                }
+
+                _zones.PrepareWhitelistTopmost(windows);
+                return true;
+            }
+
+            return false;
+        }
+        finally
+        {
+            _prompting = false;
+        }
+    }
+
     private void OnSwapCompleted(
         WindowInfo source, WindowInfo target, ZoneSwapOutcome outcome)
     {
@@ -2003,6 +2115,166 @@ public sealed partial class MainWindow : Window
         SettingsStore.Save(_settings);
     }
 
+    private void WhitelistActionCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing || _syncingWhitelistAction)
+        {
+            return;
+        }
+
+        _settings.ZoneWhitelistAction = WhitelistActionCombo.SelectedIndex switch
+        {
+            1 => ZoneWhitelistAction.Minimize,
+            2 => ZoneWhitelistAction.Topmost,
+            _ => ZoneWhitelistAction.Ask,
+        };
+        SettingsStore.Save(_settings);
+    }
+
+    private void SyncWhitelistActionCombo()
+    {
+        _syncingWhitelistAction = true;
+        WhitelistActionCombo.SelectedIndex = _settings.ZoneWhitelistAction switch
+        {
+            ZoneWhitelistAction.Minimize => 1,
+            ZoneWhitelistAction.Topmost => 2,
+            _ => 0,
+        };
+        _syncingWhitelistAction = false;
+    }
+
+    private void RebuildWhitelistRows()
+    {
+        WhitelistRowsHost.Children.Clear();
+        if (_settings.ZoneWhitelist.Count == 0)
+        {
+            WhitelistRowsHost.Children.Add(new TextBlock
+            {
+                Text = "还没有白名单规则",
+                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+            });
+            return;
+        }
+
+        foreach (var rule in _settings.ZoneWhitelist.ToList())
+        {
+            var row = new Grid { ColumnSpacing = 8 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var text = new TextBlock
+            {
+                Text = rule,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+            };
+            var remove = new Button
+            {
+                Content = "删除",
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            remove.Click += (_, _) =>
+            {
+                _settings.ZoneWhitelist.Remove(rule);
+                SettingsStore.Save(_settings);
+                RebuildWhitelistRows();
+            };
+
+            Grid.SetColumn(remove, 1);
+            row.Children.Add(text);
+            row.Children.Add(remove);
+            WhitelistRowsHost.Children.Add(row);
+        }
+    }
+
+    private async void AddWhitelistButton_Click(object sender, RoutedEventArgs e)
+    {
+        var window = _layouts.GetForegroundZoneWindow();
+        if (window == null)
+        {
+            UpdateStatus("当前前台窗口不在可加入白名单的窗口里", StatusLevel.Warn);
+            return;
+        }
+
+        if (_prompting)
+        {
+            return;
+        }
+
+        _prompting = true;
+        try
+        {
+            CancelCapture(silent: true);
+            BringWindowToFront();
+
+            var processRule = ZoneWhitelist.ProcessRule(window);
+            var titleRule = window.Title;
+            var combo = new ComboBox
+            {
+                Header = "匹配方式",
+                MinWidth = 360,
+                HorizontalAlignment = HorizontalAlignment.Left,
+            };
+            combo.Items.Add($"按进程名：{processRule}");
+            if (!string.IsNullOrWhiteSpace(titleRule))
+            {
+                combo.Items.Add($"按窗口标题包含：{titleRule}");
+            }
+
+            combo.SelectedIndex = 0;
+            var content = new StackPanel { Spacing = 10, MinWidth = 360 };
+            content.Children.Add(new TextBlock
+            {
+                Text = $"前台窗口：{window.Title}",
+                TextWrapping = TextWrapping.Wrap,
+            });
+            content.Children.Add(combo);
+            content.Children.Add(new TextBlock
+            {
+                Text = "匹配不区分大小写；白名单窗口不会进入分区，也不会参与重排。",
+                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                TextWrapping = TextWrapping.Wrap,
+            });
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = "加入工作区白名单",
+                Content = content,
+                PrimaryButtonText = "添加",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            var rule = combo.SelectedIndex == 0 ? processRule : titleRule;
+            if (string.IsNullOrWhiteSpace(rule))
+            {
+                UpdateStatus("无法生成白名单规则", StatusLevel.Warn);
+                return;
+            }
+
+            if (!_settings.ZoneWhitelist.Any(r =>
+                    r.Equals(rule, StringComparison.OrdinalIgnoreCase)))
+            {
+                _settings.ZoneWhitelist.Add(rule);
+                SettingsStore.Save(_settings);
+                RebuildWhitelistRows();
+                UpdateStatus($"已加入工作区白名单：{rule}", StatusLevel.Success);
+            }
+        }
+        finally
+        {
+            _prompting = false;
+        }
+    }
+
     /// <summary>
     /// 热键 Ctrl+Alt+Z：只开关「分区模式」能力，不直接铺窗口；
     /// 进入工作区仍然靠选布局（卡片或 Ctrl+Alt+1..5）。
@@ -2055,13 +2327,40 @@ public sealed partial class MainWindow : Window
 
             var effective = kind ?? (windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid);
 
+            // 工作区所在显示器上的白名单窗口：进入前统一询问/处理，不参与槽位。
+            var whitelisted = windows
+                .Where(w => ZoneWhitelist.IsWhitelisted(w, _settings.ZoneWhitelist))
+                .ToList();
+            if (whitelisted.Count > 0 &&
+                !await AskWhitelistAsync(whitelisted))
+            {
+                _zones.RestoreWhitelistTopmost();
+                return;
+            }
+
+            if (whitelisted.Count > 0)
+            {
+                var skipped = whitelisted.Select(w => w.Handle).ToHashSet();
+                windows = windows.Where(w => !skipped.Contains(w.Handle)).ToList();
+                if (windows.Count < 2)
+                {
+                    _zones.RestoreWhitelistTopmost();
+                    UpdateStatus("白名单之外可移动窗口不足两个，未进入工作区", StatusLevel.Warn);
+                    return;
+                }
+
+                effective = kind ?? (windows.Count <= 3 ? LayoutKind.Columns : LayoutKind.Grid);
+            }
+
             // Core 会先校验最小尺寸 / 换主窗许可：失败时状态栏已经说明，不要在这里再显示“已进入”
             if (!await _zones.EnterAsync(effective, windows, monitor))
             {
+                _zones.RestoreWhitelistTopmost();
                 return;
             }
 
             SetZoneToggle(true);
+            _zones.MarkInitialWhitelist(whitelisted);
             HighlightCard(effective);
             var blockedNote = unmovable.Count > 0
                 ? $"；无法移动：{string.Join("、", unmovable.Select(w => w.Title))}（管理员权限）"

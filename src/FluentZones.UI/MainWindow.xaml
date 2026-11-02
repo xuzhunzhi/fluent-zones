@@ -286,6 +286,36 @@
                             </Grid>
                         </Border>
 
+                        <!-- 工作区白名单 -->
+                        <Border Style="{StaticResource CardBorderStyle}" Padding="16,12">
+                            <StackPanel Spacing="8">
+                                <Grid ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="2" VerticalAlignment="Center">
+                                        <TextBlock Text="工作区白名单" />
+                                        <TextBlock Text="按进程名（不含 .exe）或窗口标题子串匹配；匹配的窗口不进入分区"
+                                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                    <ComboBox x:Name="WhitelistActionCombo" Grid.Column="1" MinWidth="180"
+                                              VerticalAlignment="Center"
+                                              SelectionChanged="WhitelistActionCombo_SelectionChanged">
+                                        <ComboBoxItem Content="进入时每次询问" />
+                                        <ComboBoxItem Content="最小化白名单窗口" />
+                                        <ComboBoxItem Content="置顶，自己处理" />
+                                    </ComboBox>
+                                </Grid>
+                                <StackPanel x:Name="WhitelistRowsHost" Spacing="4" />
+                                <Button x:Name="AddWhitelistButton"
+                                        Content="把当前前台窗口加入白名单"
+                                        HorizontalAlignment="Left"
+                                        Click="AddWhitelistButton_Click" />
+                            </StackPanel>
+                        </Border>
+
                     </StackPanel>
                 </StackPanel>
 

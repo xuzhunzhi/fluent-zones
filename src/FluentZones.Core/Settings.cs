@@ -17,6 +17,19 @@ public enum CloseAction
     Exit,
 }
 
+/// <summary>进入工作区时遇到白名单窗口的处理方式。</summary>
+public enum ZoneWhitelistAction
+{
+    /// <summary>每次询问。</summary>
+    Ask,
+
+    /// <summary>最小化这些窗口。</summary>
+    Minimize,
+
+    /// <summary>置顶，让用户自己处理。</summary>
+    Topmost,
+}
+
 public sealed class HotkeySetting
 {
     public string Action { get; set; } = string.Empty;
@@ -56,6 +69,12 @@ public sealed class AppSettings
     /// <summary>分区模式的能力开关是否开启；启动时只恢复开关，不自动进入工作区。</summary>
     public bool ZoneModeEnabled { get; set; }
 
+    /// <summary>分区白名单：进程名（不含 .exe）或窗口标题子串，大小写不敏感。</summary>
+    public List<string> ZoneWhitelist { get; set; } = new();
+
+    /// <summary>进入工作区时白名单窗口的处理方式；默认每次询问。</summary>
+    public ZoneWhitelistAction ZoneWhitelistAction { get; set; } = ZoneWhitelistAction.Ask;
+
     /// <summary>各布局的"最多窗口数"，键是 <see cref="LayoutKind"/> 的名字；缺失或 0 表示不限制。</summary>
     public Dictionary<string, int> LayoutLimits { get; set; } = new();
 
@@ -91,6 +110,8 @@ public sealed class AppSettings
         ConfirmSwapOnFit = true,
         CloseAction = CloseAction.Ask,
         ZoneModeEnabled = false,
+        ZoneWhitelist = new List<string>(),
+        ZoneWhitelistAction = ZoneWhitelistAction.Ask,
         LayoutLimits = new Dictionary<string, int>
         {
             [nameof(LayoutKind.Grid)] = GridLimitDefault,
@@ -140,6 +161,7 @@ public static class SettingsStore
                 {
                     // 间隙统一由设置提供，下限 6（一次性布局与工作区共用）
                     settings.Gap = Math.Clamp(settings.Gap, 6, 40);
+                    settings.ZoneWhitelist ??= new List<string>();
 
                     if (settings.Hotkeys.Count == 0)
                     {

@@ -37,6 +37,27 @@ public sealed class LayoutService
     /// </summary>
     public IReadOnlyList<WindowInfo> GetZoneWindows() => WindowCollector.Collect();
 
+    /// <summary>当前前台窗口（顶层根窗口），用于白名单“加入当前前台窗口”。</summary>
+    public WindowInfo? GetForegroundZoneWindow()
+    {
+        var windows = GetZoneWindows();
+        var foreground = NativeMethods.GetForegroundWindow();
+        if (foreground != IntPtr.Zero)
+        {
+            var root = NativeMethods.GetAncestor(foreground, NativeMethods.GA_ROOT);
+            var target = root != IntPtr.Zero ? root : foreground;
+            var match = windows.FirstOrDefault(w => w.Handle == target);
+            if (match != null)
+            {
+                return match;
+            }
+        }
+
+        // 点击按钮时前台通常是 Fluent Zones 自己（已被收集器排除）：
+        // 退回 Z 序最上面的外部窗口，符合“把刚才那个窗口加入白名单”的预期。
+        return windows.FirstOrDefault();
+    }
+
     /// <summary>当前鼠标所在显示器（分区入口按它选屏）。</summary>
     public IntPtr GetCursorMonitor() => NativeMethods.GetCursorMonitor();
 
