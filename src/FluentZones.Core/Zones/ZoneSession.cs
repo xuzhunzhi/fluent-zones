@@ -671,6 +671,7 @@ public sealed class ZoneSession : IDisposable
 
                 var (workspace, swap) = CreateWorkspace(
                     Kind, candidates, area, gap, allowMainSwap);
+                PreserveRatios(workspace, candidates.Count);
                 workspace.FitToMinimumSizes();
 
                 if (swap != null)
@@ -710,6 +711,7 @@ public sealed class ZoneSession : IDisposable
                         pinned.AddRange(latest.Where(w => w.Handle != latestMain.Handle));
                         var (swapped, stillNeedsSwap) = CreateWorkspace(
                             Kind, pinned, area, gap, allowMainSwap: false);
+                        PreserveRatios(swapped, pinned.Count);
                         swapped.FitToMinimumSizes();
                         if (stillNeedsSwap != null || !ZoneFits(swapped))
                         {
@@ -837,6 +839,15 @@ public sealed class ZoneSession : IDisposable
     private static bool ZoneFits(ZoneWorkspace workspace) =>
         workspace.Compute().All(p =>
             p.Rect.Width >= p.Window.MinWidth && p.Rect.Height >= p.Window.MinHeight);
+
+    private void PreserveRatios(ZoneWorkspace workspace, int windowCount)
+    {
+        var current = Workspace;
+        if (current != null && current.WindowsInOrder().Count == windowCount)
+        {
+            workspace.CopyRatiosFrom(current);
+        }
+    }
 
     /// <summary>
     /// 规划入口：网格走 <see cref="ZoneWorkspace.PlanGrid"/>（3/4 窗左日右口 / 左右两个日，

@@ -38,6 +38,24 @@ public sealed class ZoneWorkspace
     /// <summary>深拷贝切分树（窗口引用共享），用于交换候选。</summary>
     public ZoneWorkspace Clone() => new(CloneNode(Root), Area, Gap);
 
+    /// <summary>
+    /// 把另一份同构图（相同叶子数/切分方向）的比例复制到当前树，用于窗口事件重排时保留
+    /// 用户/交换调整过的分隔线，而不是回到默认 62/38、50/50。
+    /// </summary>
+    public void CopyRatiosFrom(ZoneWorkspace source) => CopyRatios(Root, source.Root);
+
+    private static void CopyRatios(ZoneNode target, ZoneNode source)
+    {
+        if (target.IsLeaf || source.IsLeaf || target.Horizontal != source.Horizontal)
+        {
+            return;
+        }
+
+        target.Ratio = source.Ratio;
+        CopyRatios(target.First!, source.First!);
+        CopyRatios(target.Second!, source.Second!);
+    }
+
     private static ZoneNode CloneNode(ZoneNode node) =>
         node.IsLeaf
             ? ZoneNode.Leaf(node.Window!)
