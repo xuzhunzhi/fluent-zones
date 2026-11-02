@@ -59,6 +59,9 @@ public sealed class WindowInfo
 
     /// <summary>目标进程权限比我们高（UIPI 会拦截 SetWindowPos），这个窗口我们动不了。</summary>
     public bool CannotMove { get; init; }
+
+    /// <summary>分层窗口（WS_EX_LAYERED）：改大小后内容可能不重绘、透明区域还会点击穿透。</summary>
+    public bool IsLayered { get; init; }
 }
 
 public sealed record LayoutOptions(

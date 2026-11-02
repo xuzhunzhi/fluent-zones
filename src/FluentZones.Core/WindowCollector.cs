@@ -141,6 +141,7 @@ public static class WindowCollector
             MinHeight = minHeight,
             MaxWidth = maxWidth,
             MaxHeight = maxHeight,
+            IsLayered = (exStyle & NativeMethods.WS_EX_LAYERED) != 0,
             Dpi = NativeMethods.GetDpiForWindow(hWnd),
             CannotMove = !Elevation.CanControl(pid),
         };

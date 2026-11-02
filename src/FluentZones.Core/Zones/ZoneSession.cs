@@ -411,10 +411,10 @@ public sealed class ZoneSession : IDisposable
     }
 
     private bool IsUnresizable(WindowInfo window) =>
-        window.IsFixedSize || _unresizableHandles.Contains(window.Handle);
+        window.IsFixedSize || window.IsLayered || _unresizableHandles.Contains(window.Handle);
 
     /// <summary>
-    /// 过滤固定大小窗口，并对每个进程最多询问一次是否加入白名单。
+    /// 过滤固定大小/分层窗口，并对每个进程最多询问一次是否加入白名单。
     /// 无论用户选择加入还是跳过，这些窗口都不会进入当前工作区。
     /// </summary>
     private async Task<List<WindowInfo>> FilterUnresizableAsync(
@@ -456,8 +456,9 @@ public sealed class ZoneSession : IDisposable
         if (fixedWindows.Count > 0 && !_fixedSizeNotified && !addedToWhitelist)
         {
             _fixedSizeNotified = true;
+            var reason = fixedWindows[0].IsLayered ? "分层窗口" : "固定大小窗口";
             StatusRequested?.Invoke(
-                $"分区模式：固定大小窗口不参与分区：{fixedWindows[0].Title}",
+                $"分区模式：{reason}不参与分区：{fixedWindows[0].Title}",
                 ZoneStatusLevel.Warn);
         }
 

@@ -1983,8 +1983,11 @@ public sealed partial class MainWindow : Window
             var content = new StackPanel { Spacing = 8 };
             content.Children.Add(new TextBlock
             {
-                Text = $"「{window.Title}」不能缩放（最小/最大尺寸相同），无法放进工作区。\n\n" +
-                       "要把它加入工作区白名单（以后不参与分区）吗？",
+                Text = window.IsLayered
+                    ? $"「{window.Title}」是分层窗口（WS_EX_LAYERED），改大小后内容会透明、点击会失效，无法放进工作区。\n\n" +
+                      "要把它加入工作区白名单（以后不参与分区）吗？"
+                    : $"「{window.Title}」不能缩放（最小/最大尺寸相同），无法放进工作区。\n\n" +
+                      "要把它加入工作区白名单（以后不参与分区）吗？",
                 TextWrapping = TextWrapping.Wrap,
             });
             content.Children.Add(noPrompt);
@@ -1992,7 +1995,7 @@ public sealed partial class MainWindow : Window
             var dialog = new ContentDialog
             {
                 XamlRoot = RootGrid.XamlRoot,
-                Title = "固定大小窗口",
+                Title = window.IsLayered ? "分层窗口" : "固定大小窗口",
                 Content = content,
                 PrimaryButtonText = "加入白名单",
                 SecondaryButtonText = "这次先跳过",
