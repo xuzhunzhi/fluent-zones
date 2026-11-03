@@ -404,6 +404,11 @@ public sealed class LayoutService
                 _snapshot = windows.Select(w => SnapshotEntry.From(w, false)).ToList();
             }
 
+            LayoutLog.Write(new List<string>
+            {
+                $"=== {DateTime.Now:yyyy-MM-dd HH:mm:ss} snapshot n={_snapshot.Count}",
+            });
+
             _lastPlan = new List<(IntPtr, WindowRect)>();
         }
     }
@@ -484,6 +489,12 @@ public sealed class LayoutService
 
             _snapshot = new List<SnapshotEntry>();
             _lastPlan = new List<(IntPtr, WindowRect)>();
+
+            LayoutLog.Write(new List<string>
+            {
+                $"=== {DateTime.Now:yyyy-MM-dd HH:mm:ss} restore n={restored}",
+            });
+
             return new LayoutResult(true, $"已还原 {restored} 个窗口的位置", restored);
         }
     }

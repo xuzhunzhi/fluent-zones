@@ -451,7 +451,7 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(_restoreCard, 2);
         Grid.SetRow(_restoreCard, 1);
         LayoutCardsHost.Children.Add(_restoreCard);
-        _restoreCard.IsEnabled = false;
+        _restoreCard.IsEnabled = true;
     }
 
     private Button CreateLayoutCard(LayoutKind kind)
