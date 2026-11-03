@@ -57,9 +57,16 @@ public static class WindowOps
     public static int RemoveResizeBorder(IntPtr hwnd)
     {
         var style = NativeMethods.GetWindowLong(hwnd, NativeMethods.GWL_STYLE);
+
+        // 如果窗口本来就缺缩放边框（上一轮被强杀/没恢复干净），恢复时必须补回来，
+        // 不能把“已去掉边框的样式”当成原样式存下来。
+        var restore = (style & NativeMethods.WS_THICKFRAME) != 0
+            ? style
+            : style | NativeMethods.WS_THICKFRAME;
+
         NativeMethods.SetWindowLong(hwnd, NativeMethods.GWL_STYLE, style & ~NativeMethods.WS_THICKFRAME);
         RefreshFrame(hwnd);
-        return style;
+        return restore;
     }
 
     /// <summary>恢复窗口原来的样式。</summary>
