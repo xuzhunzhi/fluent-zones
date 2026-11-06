@@ -40,6 +40,8 @@ public sealed class ZoneSession : IDisposable
     private readonly Dictionary<IntPtr, (int Width, int Height)> _lastActualSizes = new();
     private readonly Dictionary<IntPtr, int> _aspectCounts = new();
     private readonly ZonePlaceholderManager _placeholders = new();
+    private readonly HashSet<IntPtr> _declinedNewcomers = new();
+    private readonly HashSet<IntPtr> _pendingShow = new();
 
     private ZoneDragHook? _dragHook;
     private ZoneTitleDragHook? _titleHook;
@@ -273,6 +275,8 @@ public sealed class ZoneSession : IDisposable
         _lastActualSizes.Clear();
         _aspectCounts.Clear();
         _placeholders.Clear();
+        _declinedNewcomers.Clear();
+        _pendingShow.Clear();
         RestoreWhitelistTopmost();
         _windowHandles.Clear();
         _lastOrder.Clear();
@@ -375,6 +379,8 @@ public sealed class ZoneSession : IDisposable
         {
             _windowHandles.Add(window.Handle);
         }
+
+        _pendingShow.RemoveWhere(h => _windowHandles.Contains(h));
     }
 
     // ---------------- 白名单 ----------------
@@ -501,10 +507,19 @@ public sealed class ZoneSession : IDisposable
     /// B3 标题栏拖拽开始：期间不因窗口位置变化被 realign 拉回，也不处理窗口事件重排；
     /// 结束（松手/取消）时调用 <see cref="EndSwap"/>。
     /// </summary>
-    public void BeginSwap() => _swapInProgress = true;
+    public void BeginSwap()
+    {
+        _swapInProgress = true;
+        // 拖拽期间不再把此前的 SHOW 候选带到拖拽结束后触发。
+        _pendingShow.Clear();
+    }
 
     /// <summary>结束标题栏拖拽交换；下一轮窗口事件/重排恢复正常。</summary>
-    public void EndSwap() => _swapInProgress = false;
+    public void EndSwap()
+    {
+        _swapInProgress = false;
+        _pendingShow.Clear();
+    }
 
     /// <summary>
     /// 试算把 <paramref name="first"/> 和 <paramref name="second"/> 两个窗口交换：
@@ -773,6 +788,13 @@ public sealed class ZoneSession : IDisposable
 
     private void OnWindowEvent(IntPtr hwnd, uint eventType)
     {
+        // 销毁事件总是清掉候选记录，即使当前正在拖拽/重排。
+        if (eventType == NativeMethods.EVENT_OBJECT_DESTROY)
+        {
+            _declinedNewcomers.Remove(hwnd);
+            _pendingShow.Remove(hwnd);
+        }
+
         if (Workspace == null || _swapInProgress)
         {
             return;
@@ -793,14 +815,22 @@ public sealed class ZoneSession : IDisposable
                 return;
             }
 
-            // 可能是之前最小化的窗口刚刚恢复：它暂时还不在 _windowHandles 里，
-            // LOCATIONCHANGE 给了它第二次机会。去抖后让 SyncAsync 把它当 newcomer 处理。
-            _ = QueueCandidateSyncAsync(250);
+            // 只有 SHOW 登记过的窗口才允许用 LOCATIONCHANGE 补一次候选；
+            // 任意未知窗口（尤其是被拒绝后用户拖动它）的移动不能触发 Sync。
+            if (_pendingShow.Contains(hwnd))
+            {
+                _ = QueueCandidateSyncAsync(250);
+            }
+
             return;
         }
 
         if (eventType == NativeMethods.EVENT_OBJECT_SHOW && !_windowHandles.Contains(hwnd))
         {
+            // 重新显示（包括用户关闭/重新打开被拒绝的窗口）允许重新询问。
+            _declinedNewcomers.Remove(hwnd);
+            _pendingShow.Add(hwnd);
+
             // 恢复最小化窗口时 SHOW 可能早于 IsIconic 变 false / 标题就绪；
             // 立即 Sync 之外再延迟补一次，避免窗口永远错过加入工作区。
             _ = QueueCandidateSyncAsync(300);
@@ -830,7 +860,7 @@ public sealed class ZoneSession : IDisposable
     /// </summary>
     private async Task QueueCandidateSyncAsync(int delayMs)
     {
-        if (_candidateSyncQueued)
+        if (_candidateSyncQueued || _pendingShow.Count == 0)
         {
             return;
         }
@@ -846,7 +876,8 @@ public sealed class ZoneSession : IDisposable
             _candidateSyncQueued = false;
         }
 
-        if (Workspace == null || _swapInProgress || generation != _sessionGeneration)
+        if (Workspace == null || _swapInProgress || generation != _sessionGeneration ||
+            _pendingShow.Count == 0)
         {
             return;
         }
@@ -1077,6 +1108,7 @@ public sealed class ZoneSession : IDisposable
 
             var windows = LayoutService.ZoneWindowsOnMonitor(all, Monitor)
                 .Where(w => !Whitelisted(w))
+                .Where(w => !_declinedNewcomers.Contains(w.Handle))
                 .ToList();
             var zOrder = windows.ToList();
 
@@ -1084,7 +1116,8 @@ public sealed class ZoneSession : IDisposable
             // 白名单窗口本来就不参与，不算跨屏候选。
             var otherMonitor = all
                 .Where(w => !w.CannotMove && w.Monitor != Monitor &&
-                            !_windowHandles.Contains(w.Handle) && !Whitelisted(w))
+                            !_windowHandles.Contains(w.Handle) &&
+                            !_declinedNewcomers.Contains(w.Handle) && !Whitelisted(w))
                 .ToList();
             if (otherMonitor.Count > 0)
             {
@@ -1117,6 +1150,7 @@ public sealed class ZoneSession : IDisposable
             var handles = new HashSet<IntPtr>(windows.Select(w => w.Handle));
             if (handles.SetEquals(_windowHandles))
             {
+                _pendingShow.RemoveWhere(h => _windowHandles.Contains(h));
                 if (otherMonitor.Count > 0)
                 {
                     NotifyCrossMonitor(otherMonitor.Count);
@@ -1268,8 +1302,9 @@ public sealed class ZoneSession : IDisposable
                     return;
                 }
 
-                var accepted = OverflowRequested != null &&
-                               await OverflowRequested(victims.Count, newcomers);
+                var prompted = OverflowRequested != null;
+                var accepted = prompted &&
+                               await OverflowRequested!(victims.Count, newcomers);
 
                 // 等待期间用户退出/重新进入：放弃这次加入，不要复活旧工作区
                 if (generation != _sessionGeneration || Workspace == null)
@@ -1279,6 +1314,18 @@ public sealed class ZoneSession : IDisposable
 
                 if (!accepted)
                 {
+                    if (prompted)
+                    {
+                        // 用户明确“先不加入”：本会话内记住这些窗口，不再作为 newcomer 重试/弹窗。
+                        // 窗口 DESTROY 或重新 SHOW 时移除，允许以后再次询问。
+                        foreach (var newcomer in newcomers)
+                        {
+                            _declinedNewcomers.Add(newcomer.Handle);
+                        }
+
+                        _pendingShow.ExceptWith(newcomers.Select(w => w.Handle));
+                    }
+
                     StatusRequested?.Invoke(
                         "分区模式：新窗口未加入（工作区放不下）", ZoneStatusLevel.Warn);
                     return;
