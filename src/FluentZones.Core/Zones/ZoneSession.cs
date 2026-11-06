@@ -159,6 +159,10 @@ public sealed class ZoneSession : IDisposable
         var generation = _sessionGeneration;
         _whitelistIgnoredNotified = false;
 
+        // 进入/切换布局是一次新的会话代次：之前“先不加入”的窗口要重新参与试算。
+        _declinedNewcomers.Clear();
+        _pendingShow.Clear();
+
         windows = await FilterUnresizableAsync(windows, monitor);
 
         // 白名单窗口不进入槽位（UI 已经过滤过一次，这里兜底；一次性布局不受影响）。
@@ -214,13 +218,81 @@ public sealed class ZoneSession : IDisposable
 
         if (!ZoneFits(workspace))
         {
-            // 与 SyncAsync 的“放不下”处理一致：不静默应用，也不把窗口压到最小尺寸以下
-            StatusRequested?.Invoke(
-                IsActive
-                    ? $"分区模式（{LayoutNames.Display(kind)}）：窗口最小尺寸放不下，保持原布局"
-                    : $"分区模式（{LayoutNames.Display(kind)}）：窗口最小尺寸放不下，无法进入",
-                ZoneStatusLevel.Warn);
-            return false;
+            // 切换布局时被“先不加入”拒绝过的窗口会重新出现；优先按本轮 newcomers
+            // 重新找退让方案，放不下就再次询问用户。
+            var oldHandles = new HashSet<IntPtr>(_windowHandles);
+            var newcomers = windows.Where(w => !oldHandles.Contains(w.Handle)).ToList();
+            var zOrder = windows.ToList();
+            var candidates = windows.ToList();
+            ZoneWorkspace? fitted = null;
+            List<WindowInfo>? selected = null;
+            List<WindowInfo>? victims = null;
+
+            var removable = PickOverflowVictims(zOrder, candidates, newcomers);
+            for (var k = 1; k <= removable.Count; k++)
+            {
+                var drop = removable.Take(k).ToList();
+                var subset = candidates
+                    .Where(w => !drop.Any(d => d.Handle == w.Handle))
+                    .ToList();
+                if (subset.Count == 0)
+                {
+                    break;
+                }
+
+                var attempt = CreateWorkspace(
+                    kind, subset, _getArea(monitor), _getGap(), allowMainSwap: false).Workspace;
+                attempt.FitToMinimumSizes();
+                if (ZoneFits(attempt))
+                {
+                    fitted = attempt;
+                    selected = subset;
+                    victims = drop;
+                    break;
+                }
+            }
+
+            if (fitted != null && victims != null && selected != null &&
+                OverflowRequested != null)
+            {
+                var accepted = await OverflowRequested(victims.Count, newcomers);
+                if (generation != _sessionGeneration)
+                {
+                    return false;
+                }
+
+                if (!accepted)
+                {
+                    foreach (var newcomer in newcomers)
+                    {
+                        _declinedNewcomers.Add(newcomer.Handle);
+                    }
+
+                    _pendingShow.ExceptWith(newcomers.Select(w => w.Handle));
+                    StatusRequested?.Invoke(
+                        "分区模式：新窗口未加入（工作区放不下）", ZoneStatusLevel.Warn);
+                    return false;
+                }
+
+                foreach (var victim in victims)
+                {
+                    WindowOps.Minimize(victim.Handle);
+                }
+
+                windows = selected;
+                workspace = fitted;
+            }
+
+            if (!ZoneFits(workspace))
+            {
+                // 与 SyncAsync 的“放不下”处理一致：不静默应用，也不把窗口压到最小尺寸以下
+                StatusRequested?.Invoke(
+                    IsActive
+                        ? $"分区模式（{LayoutNames.Display(kind)}）：窗口最小尺寸放不下，保持原布局"
+                        : $"分区模式（{LayoutNames.Display(kind)}）：窗口最小尺寸放不下，无法进入",
+                    ZoneStatusLevel.Warn);
+                return false;
+            }
         }
 
         // 到这里才确定会应用：让 UI 记录进入前的窗口位置（失败路径不会污染快照）
