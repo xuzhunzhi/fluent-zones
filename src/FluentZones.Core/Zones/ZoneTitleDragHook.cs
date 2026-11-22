@@ -65,6 +65,12 @@ public sealed class ZoneTitleDragHook : IDisposable
     public event Action? DragEnded;
     public event Action<WindowInfo, WindowInfo>? WindowDropped;
 
+    /// <summary>正在拖标题栏（交换/移出进行中）。</summary>
+    public bool IsDragging
+    {
+        get => _dragging;
+    }
+
     public ZoneTitleDragHook(Func<ZoneWorkspace?> getWorkspace)
     {
         _getWorkspace = getWorkspace;
@@ -261,6 +267,12 @@ public sealed class ZoneTitleDragHook : IDisposable
                 {
                     WindowDropped?.Invoke(source, target.Window);
                 }
+                else if (source != null && target == null)
+                {
+                    // 拖到工作区之外：如果落点在别的显示器，把窗口真正移过去并脱离工作区；
+                    // 同屏空白处仍然按取消处理（回原槽位）。
+                    TryMoveToOtherMonitor(sourceHwnd, info.pt);
+                }
 
                 return new IntPtr(1);
             }
@@ -320,6 +332,13 @@ public sealed class ZoneTitleDragHook : IDisposable
             return false;
         }
 
+        // 最大化窗口交给系统自己处理（双击还原、拖下来还原并移动），
+        // 否则拖它的标题栏会被误当成槽位交换。
+        if (NativeMethods.IsZoomed(root))
+        {
+            return false;
+        }
+
         var lParam = unchecked((IntPtr)((point.Y << 16) | (point.X & 0xFFFF)));
         var result = NativeMethods.SendMessageTimeout(
             root, NativeMethods.WM_NCHITTEST, IntPtr.Zero, lParam,
@@ -358,6 +377,47 @@ public sealed class ZoneTitleDragHook : IDisposable
         return placements.FirstOrDefault(p =>
             point.X >= p.Rect.Left && point.X < p.Rect.Right &&
             point.Y >= p.Rect.Top && point.Y < p.Rect.Bottom);
+    }
+
+    /// <summary>
+    /// 松手落在另一台显示器上：把窗口按“抓住标题栏时的相对位置”移到落点，并脱离工作区。
+    /// 低层钩子已经吃掉了按下事件，窗口自己收不到系统移动，所以这里手动补一次
+    /// <see cref="NativeMethods.SetWindowPos"/>；会话随后的 LOCATIONCHANGE 会把它移出槽位。
+    /// </summary>
+    private void TryMoveToOtherMonitor(IntPtr hwnd, NativeMethods.POINT point)
+    {
+        var workspace = _getWorkspace();
+        if (workspace == null || hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var center = new NativeMethods.POINT
+        {
+            X = workspace.Area.Left + workspace.Area.Width / 2,
+            Y = workspace.Area.Top + workspace.Area.Height / 2,
+        };
+        var areaMonitor = NativeMethods.MonitorFromPoint(
+            center, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        var dropMonitor = NativeMethods.MonitorFromPoint(
+            point, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        if (areaMonitor == IntPtr.Zero || dropMonitor == IntPtr.Zero || areaMonitor == dropMonitor)
+        {
+            return;
+        }
+
+        if (!NativeMethods.GetWindowRect(hwnd, out var rect))
+        {
+            return;
+        }
+
+        var x = point.X - (_downPoint.X - rect.Left);
+        var y = point.Y - (_downPoint.Y - rect.Top);
+        NativeMethods.SetWindowPos(
+            hwnd, IntPtr.Zero, x, y, 0, 0,
+            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER |
+            NativeMethods.SWP_ASYNCWINDOWPOS);
     }
 
     private void StartVisuals(NativeMethods.POINT point)

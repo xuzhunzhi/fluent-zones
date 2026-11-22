@@ -43,6 +43,15 @@ public sealed class ZoneSession : IDisposable
     private readonly HashSet<IntPtr> _declinedNewcomers = new();
     private readonly HashSet<IntPtr> _pendingShow = new();
 
+    // 最小化/最大化是“暂时离开槽位”，与关闭/移出不同：最小化会重排其它窗口，
+    // 最大化保留槽位（还原后回到原位），两者都不应被 LOCATIONCHANGE 拉回。
+    private readonly HashSet<IntPtr> _minimized = new();
+    private readonly HashSet<IntPtr> _maximized = new();
+
+    // 被用户拖到其它显示器的窗口：拖回来时允许重新入槽。
+    private readonly HashSet<IntPtr> _detached = new();
+    private bool _minimizeSyncQueued;
+
     private ZoneDragHook? _dragHook;
     private ZoneTitleDragHook? _titleHook;
     private WinEventWatcher? _watcher;
@@ -162,6 +171,11 @@ public sealed class ZoneSession : IDisposable
         // 进入/切换布局是一次新的会话代次：之前“先不加入”的窗口要重新参与试算。
         _declinedNewcomers.Clear();
         _pendingShow.Clear();
+
+        // 最大化窗口在新布局里应该回到槽位（Apply 会取消最大化）；
+        // 仍处于最小化的窗口保持挂起，等它还原后再入槽。
+        _maximized.Clear();
+        _minimized.RemoveWhere(h => !NativeMethods.IsWindow(h) || !NativeMethods.IsIconic(h));
 
         windows = await FilterUnresizableAsync(windows, monitor);
 
@@ -349,6 +363,10 @@ public sealed class ZoneSession : IDisposable
         _placeholders.Clear();
         _declinedNewcomers.Clear();
         _pendingShow.Clear();
+        _minimized.Clear();
+        _maximized.Clear();
+        _detached.Clear();
+        _minimizeSyncQueued = false;
         RestoreWhitelistTopmost();
         _windowHandles.Clear();
         _lastOrder.Clear();
@@ -409,8 +427,20 @@ public sealed class ZoneSession : IDisposable
 
         foreach (var placement in source)
         {
+            var handle = placement.Window.Handle;
+
+            // 最小化/最大化/被拖到其它显示器的窗口不参与摆放，也不画长宽比占位：
+            // 最大化保留槽位，最小化和跨屏则等 Sync 重建工作区。
+            if (_minimized.Contains(handle) ||
+                _maximized.Contains(handle) ||
+                NativeMethods.IsIconic(handle) ||
+                !IsOnWorkspaceMonitor(handle))
+            {
+                continue;
+            }
+
             var rect = placement.Rect;
-            if (_aspectLocked.TryGetValue(placement.Window.Handle, out var aspect))
+            if (_aspectLocked.TryGetValue(handle, out var aspect))
             {
                 rect = ZoneAspectFit.Fit(placement.Rect, aspect.Width, aspect.Height);
                 foreach (var gap in ZoneAspectFit.Gaps(placement.Rect, rect))
@@ -453,6 +483,8 @@ public sealed class ZoneSession : IDisposable
         }
 
         _pendingShow.RemoveWhere(h => _windowHandles.Contains(h));
+        _detached.RemoveWhere(h => _windowHandles.Contains(h));
+        _minimized.RemoveWhere(h => _windowHandles.Contains(h) && !NativeMethods.IsIconic(h));
     }
 
     // ---------------- 白名单 ----------------
@@ -865,11 +897,39 @@ public sealed class ZoneSession : IDisposable
         {
             _declinedNewcomers.Remove(hwnd);
             _pendingShow.Remove(hwnd);
+            _minimized.Remove(hwnd);
+            _maximized.Remove(hwnd);
+            _detached.Remove(hwnd);
         }
 
         if (Workspace == null || _swapInProgress)
         {
             return;
+        }
+
+        // 最小化：窗口离开槽位，剩余窗口重新铺开。EVENT_OBJECT 区间收不到这条事件，
+        // 只靠 LOCATIONCHANGE 的话会被误当成“窗口被挪走”，反而把空槽位一直留着。
+        if (eventType == NativeMethods.EVENT_SYSTEM_MINIMIZESTART)
+        {
+            if (_windowHandles.Contains(hwnd))
+            {
+                MarkMinimized(hwnd);
+                _ = QueueMinimizeSyncAsync();
+            }
+
+            return;
+        }
+
+        // 还原最小化：和 SHOW 一样按“新窗口”重新入槽。
+        if (eventType == NativeMethods.EVENT_SYSTEM_MINIMIZEEND)
+        {
+            _minimized.Remove(hwnd);
+            if (!_windowHandles.Contains(hwnd))
+            {
+                _declinedNewcomers.Remove(hwnd);
+                _pendingShow.Add(hwnd);
+                _ = QueueCandidateSyncAsync(200);
+            }
         }
 
         // 工作区窗口被外部工具（如 DSH 的 computer use）改了位置/大小：把它拉回槽位。
@@ -883,7 +943,46 @@ public sealed class ZoneSession : IDisposable
 
             if (_windowHandles.Contains(hwnd))
             {
+                // 最小化动画期间窗口矩形会跑到屏幕外，不能拉回槽位。
+                if (NativeMethods.IsIconic(hwnd))
+                {
+                    MarkMinimized(hwnd);
+                    _ = QueueMinimizeSyncAsync();
+                    return;
+                }
+
+                // 最大化：保留槽位，但不再摆放/加边框；还原后自动回到槽位。
+                if (NativeMethods.IsZoomed(hwnd))
+                {
+                    MarkMaximized(hwnd);
+                    return;
+                }
+
+                if (_maximized.Remove(hwnd))
+                {
+                    _ = ResumeMaximizedAsync(hwnd);
+                    return;
+                }
+
+                // 被拖到别的显示器：移出工作区，让剩余窗口重新铺满。
+                if (!IsOnWorkspaceMonitor(hwnd))
+                {
+                    DetachWindow(hwnd, "窗口移到了其它显示器");
+                    return;
+                }
+
                 _ = QueueRealignAsync();
+                return;
+            }
+
+            // 被拖到其它显示器、又拖回工作区所在显示器的窗口：重新按新窗口入槽。
+            if (_detached.Contains(hwnd) && !NativeMethods.IsIconic(hwnd) &&
+                IsOnWorkspaceMonitor(hwnd))
+            {
+                _detached.Remove(hwnd);
+                _declinedNewcomers.Remove(hwnd);
+                _pendingShow.Add(hwnd);
+                _ = QueueCandidateSyncAsync(250);
                 return;
             }
 
@@ -897,15 +996,29 @@ public sealed class ZoneSession : IDisposable
             return;
         }
 
-        if (eventType == NativeMethods.EVENT_OBJECT_SHOW && !_windowHandles.Contains(hwnd))
+        if (eventType == NativeMethods.EVENT_OBJECT_SHOW)
         {
-            // 重新显示（包括用户关闭/重新打开被拒绝的窗口）允许重新询问。
-            _declinedNewcomers.Remove(hwnd);
-            _pendingShow.Add(hwnd);
+            // 最小化窗口恢复时可能只发 SHOW（没有 MINIMIZEEND）：
+            // 如果它本来就还在工作区里，直接补回边框与槽位；否则按新窗口处理。
+            if (!NativeMethods.IsIconic(hwnd))
+            {
+                _minimized.Remove(hwnd);
+                if (_windowHandles.Contains(hwnd) && Workspace != null)
+                {
+                    Apply(Workspace);
+                }
+            }
 
-            // 恢复最小化窗口时 SHOW 可能早于 IsIconic 变 false / 标题就绪；
-            // 立即 Sync 之外再延迟补一次，避免窗口永远错过加入工作区。
-            _ = QueueCandidateSyncAsync(300);
+            if (!_windowHandles.Contains(hwnd))
+            {
+                // 重新显示（包括用户关闭/重新打开被拒绝的窗口）允许重新询问。
+                _declinedNewcomers.Remove(hwnd);
+                _pendingShow.Add(hwnd);
+
+                // 恢复最小化窗口时 SHOW 可能早于 IsIconic 变 false / 标题就绪；
+                // 立即 Sync 之外再延迟补一次，避免窗口永远错过加入工作区。
+                _ = QueueCandidateSyncAsync(300);
+            }
         }
 
         if (_syncQueued)
@@ -964,6 +1077,199 @@ public sealed class ZoneSession : IDisposable
         }
     }
 
+    /// <summary>最小化后延迟一次重排：等最小化动画把 IsIconic/可见性稳定下来。</summary>
+    private async Task QueueMinimizeSyncAsync()
+    {
+        if (_minimizeSyncQueued)
+        {
+            return;
+        }
+
+        _minimizeSyncQueued = true;
+        var generation = _sessionGeneration;
+        try
+        {
+            await Task.Delay(80);
+        }
+        finally
+        {
+            _minimizeSyncQueued = false;
+        }
+
+        if (Workspace == null || _swapInProgress || generation != _sessionGeneration)
+        {
+            return;
+        }
+
+        if (_postToUi == null)
+        {
+            await SyncAsync();
+        }
+        else
+        {
+            _postToUi(() => _ = SyncAsync());
+        }
+    }
+
+    /// <summary>
+    /// 窗口最小化：先暂停摆放并收掉它的边框/长宽比占位，真正的重排在
+    /// <see cref="QueueMinimizeSyncAsync"/> 里做。不提前从 _windowHandles 移除，
+    /// 这样 Sync 会把剩余窗口当成“离开”而不是“全是新窗口”。
+    /// </summary>
+    private void MarkMinimized(IntPtr handle)
+    {
+        if (!_minimized.Add(handle))
+        {
+            return;
+        }
+
+        _maximized.Remove(handle);
+        _aspectLocked.Remove(handle);
+        _aspectCounts.Remove(handle);
+        _lastActualSizes.Remove(handle);
+        _mismatchCounts.Remove(handle);
+
+        if (_bordered.Remove(handle))
+        {
+            WindowOps.ResetBorderColor(handle);
+            RestoreStyle(handle);
+        }
+
+        // 长宽比缺口是灰色占位窗：窗口一最小化先全部收掉，避免留下灰块/闪烁。
+        _placeholders.Clear();
+    }
+
+    /// <summary>窗口最大化：保留槽位，但不再摆放、不再套分区边框；还原后回到槽位。</summary>
+    private void MarkMaximized(IntPtr handle)
+    {
+        if (!_maximized.Add(handle))
+        {
+            return;
+        }
+
+        _minimized.Remove(handle);
+        _aspectLocked.Remove(handle);
+        _aspectCounts.Remove(handle);
+        _lastActualSizes.Remove(handle);
+        _mismatchCounts.Remove(handle);
+
+        if (_bordered.Remove(handle))
+        {
+            WindowOps.ResetBorderColor(handle);
+            RestoreStyle(handle);
+        }
+
+        StatusRequested?.Invoke(
+            "分区模式：窗口已最大化（槽位保留），还原后会回到原槽位", ZoneStatusLevel.Info);
+    }
+
+    /// <summary>取消最大化后等动画/拖拽结束，再把窗口放回槽位并补回分区边框。</summary>
+    private async Task ResumeMaximizedAsync(IntPtr handle)
+    {
+        var generation = _sessionGeneration;
+
+        // 用户可能是按住标题栏把最大化窗口拖下来：等左键松开再处理，
+        // 否则会在拖拽中途把窗口拉回槽位。
+        var waited = 0;
+        while ((NativeMethods.GetAsyncKeyState(NativeMethods.VK_LBUTTON) & 0x8000) != 0 &&
+               waited < 4000)
+        {
+            await Task.Delay(100);
+            waited += 100;
+        }
+
+        await Task.Delay(120);
+
+        if (Workspace == null || _swapInProgress || generation != _sessionGeneration)
+        {
+            return;
+        }
+
+        if (!NativeMethods.IsWindow(handle))
+        {
+            return;
+        }
+
+        // 还原动画期间又被最大化了
+        if (NativeMethods.IsZoomed(handle))
+        {
+            _maximized.Add(handle);
+            return;
+        }
+
+        if (_minimized.Contains(handle) || NativeMethods.IsIconic(handle))
+        {
+            return;
+        }
+
+        // 拖到了另一台显示器：移出工作区，不再拉回。
+        if (!IsOnWorkspaceMonitor(handle))
+        {
+            DetachWindow(handle, "窗口移到了其它显示器");
+            return;
+        }
+
+        Apply(Workspace);
+    }
+
+    /// <summary>
+    /// 窗口被移到别的显示器：移出当前工作区（保留窗口本身与样式），
+    /// 剩余窗口重新铺满；之后拖回来会按新窗口重新入槽。
+    /// </summary>
+    private void DetachWindow(IntPtr handle, string reason)
+    {
+        if (!_windowHandles.Contains(handle))
+        {
+            return;
+        }
+
+        _maximized.Remove(handle);
+        _minimized.Remove(handle);
+        _aspectLocked.Remove(handle);
+        _aspectCounts.Remove(handle);
+        _lastActualSizes.Remove(handle);
+        _mismatchCounts.Remove(handle);
+        _pendingShow.Remove(handle);
+
+        if (_bordered.Remove(handle))
+        {
+            WindowOps.ResetBorderColor(handle);
+            RestoreStyle(handle);
+        }
+
+        _placeholders.Clear();
+        _detached.Add(handle);
+        StatusRequested?.Invoke(
+            $"分区模式：{reason}，已移出工作区（剩余窗口重新铺开）；拖回来可重新入槽",
+            ZoneStatusLevel.Info);
+
+        // 不手动改 _windowHandles：让 Sync 看到集合差异后重建，避免把剩余窗口误判成 newcomer。
+        _ = SyncAsync();
+    }
+
+    /// <summary>窗口中心是否还在当前工作区所在显示器上（最小化/最大化窗口不做跨屏判断）。</summary>
+    private bool IsOnWorkspaceMonitor(IntPtr handle)
+    {
+        if (NativeMethods.IsIconic(handle) || NativeMethods.IsZoomed(handle))
+        {
+            return true;
+        }
+
+        if (!NativeMethods.GetWindowRect(handle, out var rect) ||
+            rect.Width <= 0 || rect.Height <= 0)
+        {
+            return true;
+        }
+
+        var center = new NativeMethods.POINT
+        {
+            X = rect.Left + rect.Width / 2,
+            Y = rect.Top + rect.Height / 2,
+        };
+        var monitor = NativeMethods.MonitorFromPoint(center, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        return monitor == IntPtr.Zero || monitor == Monitor;
+    }
+
     private bool _realignQueued;
     private DateTime _lastRealign;
 
@@ -1008,6 +1314,50 @@ public sealed class ZoneSession : IDisposable
         if (!force && (DateTime.UtcNow - _lastRealign).TotalMilliseconds < 1000)
         {
             return;
+        }
+
+        // 左键按住时先别抢：可能是用户正把最大化窗口拖下来/拖到另一台显示器，
+        // 中途扶正会把系统拖拽拽回去。
+        if (!force &&
+            (NativeMethods.GetAsyncKeyState(NativeMethods.VK_LBUTTON) & 0x8000) != 0 &&
+            _swapInProgress == false && _titleHook?.IsDragging != true)
+        {
+            _ = QueueRealignAsync(300);
+            return;
+        }
+
+        // 兜底：事件偶尔会漏（最小化动画、系统直接最大化、被其它工具跨屏移动），
+        // 在比对之前先按实时状态把窗口标成挂起/移出，避免把最大化或最小化的窗口拉回槽位。
+        foreach (var handle in _windowHandles.ToList())
+        {
+            if (!NativeMethods.IsWindow(handle) || _minimized.Contains(handle))
+            {
+                continue;
+            }
+
+            if (NativeMethods.IsIconic(handle))
+            {
+                MarkMinimized(handle);
+                _ = QueueMinimizeSyncAsync();
+                continue;
+            }
+
+            if (NativeMethods.IsZoomed(handle))
+            {
+                MarkMaximized(handle);
+                continue;
+            }
+
+            if (_maximized.Contains(handle))
+            {
+                continue;
+            }
+
+            if (!IsOnWorkspaceMonitor(handle))
+            {
+                DetachWindow(handle, "窗口移到了其它显示器");
+                return;
+            }
         }
 
         foreach (var placement in BuildLayout(Workspace).Placements)
@@ -1216,6 +1566,22 @@ public sealed class ZoneSession : IDisposable
 
             if (windows.Count == 0)
             {
+                // 只有确实全部最小化/关闭时才清空；暂时被 cloaked 或移到其它显示器
+                // 的窗口不能当成“都走了”，否则回来时会被一起当成新窗口重排。
+                var stillThere = _windowHandles.Where(NativeMethods.IsWindow).ToList();
+                if (stillThere.Count > 0 && !stillThere.All(NativeMethods.IsIconic))
+                {
+                    return;
+                }
+
+                // 所有窗口都最小化/移走了：清掉句柄与占位，保留会话本身；
+                // 任一窗口还原后会被当成新窗口重新入槽。
+                SyncBorders(Array.Empty<ZonePlacement>());
+                _placeholders.Clear();
+                _windowHandles.Clear();
+                _lastOrder.Clear();
+                StatusRequested?.Invoke(
+                    "分区模式：所有窗口都已离开，等待窗口恢复后重新入槽", ZoneStatusLevel.Info);
                 return;
             }
 

@@ -8,9 +8,10 @@ public sealed class WinEventWatcher : IDisposable
 {
     private readonly NativeMethods.WinEventProc _callback;
     private IntPtr _hook;
+    private IntPtr _minimizeHook;
     private bool _disposed;
 
-    /// <summary>参数：窗口句柄、事件类型（EVENT_OBJECT_*）。</summary>
+    /// <summary>参数：窗口句柄、事件类型（EVENT_OBJECT_* / EVENT_SYSTEM_*）。</summary>
     public event Action<IntPtr, uint>? WindowEvent;
 
     public WinEventWatcher()
@@ -25,8 +26,20 @@ public sealed class WinEventWatcher : IDisposable
             0,
             NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
 
-        if (_hook == IntPtr.Zero)
+        // 最小化/还原不属于 EVENT_OBJECT 区间，单独挂一个 EVENT_SYSTEM 钩子；
+        // 否则最小化只会收到 LOCATIONCHANGE，工作区会一直留着已经空掉的槽位。
+        _minimizeHook = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_SYSTEM_MINIMIZESTART,
+            NativeMethods.EVENT_SYSTEM_MINIMIZEEND,
+            IntPtr.Zero,
+            _callback,
+            0,
+            0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+
+        if (_hook == IntPtr.Zero || _minimizeHook == IntPtr.Zero)
         {
+            Dispose();
             throw new InvalidOperationException("SetWinEventHook 失败");
         }
     }
@@ -52,7 +65,9 @@ public sealed class WinEventWatcher : IDisposable
                 NativeMethods.EVENT_OBJECT_DESTROY or
                 NativeMethods.EVENT_OBJECT_SHOW or
                 NativeMethods.EVENT_OBJECT_HIDE or
-                NativeMethods.EVENT_OBJECT_LOCATIONCHANGE))
+                NativeMethods.EVENT_OBJECT_LOCATIONCHANGE or
+                NativeMethods.EVENT_SYSTEM_MINIMIZESTART or
+                NativeMethods.EVENT_SYSTEM_MINIMIZEEND))
         {
             return;
         }
@@ -72,6 +87,12 @@ public sealed class WinEventWatcher : IDisposable
         {
             NativeMethods.UnhookWinEvent(_hook);
             _hook = IntPtr.Zero;
+        }
+
+        if (_minimizeHook != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWinEvent(_minimizeHook);
+            _minimizeHook = IntPtr.Zero;
         }
     }
 }

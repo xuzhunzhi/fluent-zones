@@ -18,6 +18,7 @@ internal static class NativeMethods
     internal const uint SWP_NOACTIVATE = 0x0010;
     internal const uint SWP_SHOWWINDOW = 0x0040;
     internal const uint SWP_NOOWNERZORDER = 0x0200;
+    internal const uint SWP_ASYNCWINDOWPOS = 0x4000;
 
     internal const int SW_SHOWNOACTIVATE = 4;
     internal const int SW_SHOWMINNOACTIVE = 7;
@@ -329,6 +330,7 @@ internal static class NativeMethods
     internal const uint SWP_FRAMECHANGED = 0x0020;
 
     internal const int VK_CONTROL = 0x11;
+    internal const int VK_LBUTTON = 0x01;
 
     [DllImport("user32.dll")]
     internal static extern short GetAsyncKeyState(int vKey);
@@ -575,6 +577,8 @@ internal static class NativeMethods
     internal const uint EVENT_OBJECT_SHOW = 0x8002;
     internal const uint EVENT_OBJECT_HIDE = 0x8003;
     internal const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+    internal const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
+    internal const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
     internal const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     internal const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
