@@ -710,7 +710,13 @@ public sealed class ZoneSession : IDisposable
     {
         var handles = placements.Select(p => p.Window.Handle).ToHashSet();
 
-        foreach (var stale in _bordered.Where(h => !handles.Contains(h)).ToList())
+        // 最大化的窗口故意不参与摆放（槽位保留），不能把它当成“离开工作区”而恢复样式：
+        // 把 WS_THICKFRAME 加回去会让它立即退出最大化。最小化窗口同理，等恢复后再说。
+        foreach (var stale in _bordered
+                     .Where(h => !handles.Contains(h) &&
+                                 !_maximized.Contains(h) &&
+                                 !_minimized.Contains(h))
+                     .ToList())
         {
             WindowOps.ResetBorderColor(stale);
             RestoreStyle(stale);
@@ -954,6 +960,12 @@ public sealed class ZoneSession : IDisposable
                 // 最大化：保留槽位，但不再摆放/加边框；还原后自动回到槽位。
                 if (NativeMethods.IsZoomed(hwnd))
                 {
+                    if (!IsOnWorkspaceMonitor(hwnd))
+                    {
+                        DetachWindow(hwnd, "窗口移到了其它显示器");
+                        return;
+                    }
+
                     MarkMaximized(hwnd);
                     return;
                 }
@@ -1153,11 +1165,18 @@ public sealed class ZoneSession : IDisposable
         _lastActualSizes.Remove(handle);
         _mismatchCounts.Remove(handle);
 
-        if (_bordered.Remove(handle))
+        // 只去掉强调色边框，不动样式：把 WS_THICKFRAME 加回去会让最大化窗口
+        // 立刻退回还原状态（窗口自己的 WM_NCCALCSIZE/WM_SIZE 会响应这个变化）。
+        // 缩放边框继续缺失没关系，分区模式本来就不让用户拖窗口边缩放。
+        if (_bordered.Contains(handle))
         {
             WindowOps.ResetBorderColor(handle);
-            RestoreStyle(handle);
         }
+
+        LayoutLog.Write(new[]
+        {
+            "=== maximize " + $"0x{handle.ToInt64():X}",
+        });
 
         StatusRequested?.Invoke(
             "分区模式：窗口已最大化（槽位保留），还原后会回到原槽位", ZoneStatusLevel.Info);
@@ -1209,6 +1228,17 @@ public sealed class ZoneSession : IDisposable
             return;
         }
 
+        // 最大化时把强调色边框去掉了（样式没动），还原后补回来。
+        if (_bordered.Contains(handle))
+        {
+            WindowOps.SetBorderColor(handle, WindowOps.ZoneBorderColor);
+        }
+
+        LayoutLog.Write(new[]
+        {
+            "=== unmaximize " + $"0x{handle.ToInt64():X}",
+        });
+
         Apply(Workspace);
     }
 
@@ -1247,10 +1277,10 @@ public sealed class ZoneSession : IDisposable
         _ = SyncAsync();
     }
 
-    /// <summary>窗口中心是否还在当前工作区所在显示器上（最小化/最大化窗口不做跨屏判断）。</summary>
+    /// <summary>窗口中心是否还在当前工作区所在显示器上（最小化窗口不做跨屏判断）。</summary>
     private bool IsOnWorkspaceMonitor(IntPtr handle)
     {
-        if (NativeMethods.IsIconic(handle) || NativeMethods.IsZoomed(handle))
+        if (NativeMethods.IsIconic(handle))
         {
             return true;
         }
@@ -1344,6 +1374,12 @@ public sealed class ZoneSession : IDisposable
 
             if (NativeMethods.IsZoomed(handle))
             {
+                if (!IsOnWorkspaceMonitor(handle))
+                {
+                    DetachWindow(handle, "窗口移到了其它显示器");
+                    return;
+                }
+
                 MarkMaximized(handle);
                 continue;
             }

@@ -270,8 +270,11 @@ public sealed class ZoneTitleDragHook : IDisposable
                 else if (source != null && target == null)
                 {
                     // 拖到工作区之外：如果落点在别的显示器，把窗口真正移过去并脱离工作区；
-                    // 同屏空白处仍然按取消处理（回原槽位）。
-                    TryMoveToOtherMonitor(sourceHwnd, info.pt);
+                    // 落在当前显示器顶边则最大化；同屏空白处仍然按取消处理（回原槽位）。
+                    if (!TryMoveToOtherMonitor(sourceHwnd, info.pt))
+                    {
+                        TryMaximizeAtTop(sourceHwnd, info.pt);
+                    }
                 }
 
                 return new IntPtr(1);
@@ -383,8 +386,47 @@ public sealed class ZoneTitleDragHook : IDisposable
     /// 松手落在另一台显示器上：把窗口按“抓住标题栏时的相对位置”移到落点，并脱离工作区。
     /// 低层钩子已经吃掉了按下事件，窗口自己收不到系统移动，所以这里手动补一次
     /// <see cref="NativeMethods.SetWindowPos"/>；会话随后的 LOCATIONCHANGE 会把它移出槽位。
+    /// 返回 true 表示已经移动。
     /// </summary>
-    private void TryMoveToOtherMonitor(IntPtr hwnd, NativeMethods.POINT point)
+    private bool TryMoveToOtherMonitor(IntPtr hwnd, NativeMethods.POINT point)
+    {
+        var workspace = _getWorkspace();
+        if (workspace == null || hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var center = new NativeMethods.POINT
+        {
+            X = workspace.Area.Left + workspace.Area.Width / 2,
+            Y = workspace.Area.Top + workspace.Area.Height / 2,
+        };
+        var areaMonitor = NativeMethods.MonitorFromPoint(
+            center, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        var dropMonitor = NativeMethods.MonitorFromPoint(
+            point, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        if (areaMonitor == IntPtr.Zero || dropMonitor == IntPtr.Zero || areaMonitor == dropMonitor)
+        {
+            return false;
+        }
+
+        if (!NativeMethods.GetWindowRect(hwnd, out var rect))
+        {
+            return false;
+        }
+
+        var x = point.X - (_downPoint.X - rect.Left);
+        var y = point.Y - (_downPoint.Y - rect.Top);
+        NativeMethods.SetWindowPos(
+            hwnd, IntPtr.Zero, x, y, 0, 0,
+            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER |
+            NativeMethods.SWP_ASYNCWINDOWPOS);
+        return true;
+    }
+
+    /// <summary>松手在当前显示器顶边（8px 内）：按 Windows 的“拖到顶部最大化”手势处理。</summary>
+    private void TryMaximizeAtTop(IntPtr hwnd, NativeMethods.POINT point)
     {
         var workspace = _getWorkspace();
         if (workspace == null || hwnd == IntPtr.Zero)
@@ -401,23 +443,23 @@ public sealed class ZoneTitleDragHook : IDisposable
             center, NativeMethods.MONITOR_DEFAULTTONEAREST);
         var dropMonitor = NativeMethods.MonitorFromPoint(
             point, NativeMethods.MONITOR_DEFAULTTONEAREST);
-        if (areaMonitor == IntPtr.Zero || dropMonitor == IntPtr.Zero || areaMonitor == dropMonitor)
+        if (areaMonitor == IntPtr.Zero || dropMonitor == IntPtr.Zero || areaMonitor != dropMonitor)
         {
             return;
         }
 
-        if (!NativeMethods.GetWindowRect(hwnd, out var rect))
+        var info = new NativeMethods.MONITORINFO { cbSize = Marshal.SizeOf<NativeMethods.MONITORINFO>() };
+        if (!NativeMethods.GetMonitorInfo(dropMonitor, ref info))
         {
             return;
         }
 
-        var x = point.X - (_downPoint.X - rect.Left);
-        var y = point.Y - (_downPoint.Y - rect.Top);
-        NativeMethods.SetWindowPos(
-            hwnd, IntPtr.Zero, x, y, 0, 0,
-            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
-            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER |
-            NativeMethods.SWP_ASYNCWINDOWPOS);
+        if (point.Y > info.rcMonitor.Top + 8)
+        {
+            return;
+        }
+
+        NativeMethods.ShowWindow(hwnd, NativeMethods.SW_MAXIMIZE);
     }
 
     private void StartVisuals(NativeMethods.POINT point)

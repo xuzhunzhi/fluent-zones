@@ -69,11 +69,19 @@ public static class WindowOps
         return restore;
     }
 
-    /// <summary>恢复窗口原来的样式。</summary>
+    /// <summary>恢复窗口原来的样式；若窗口正处于最大化，补回最大化状态（改样式会把窗口还原）。</summary>
     public static void RestoreStyle(IntPtr hwnd, int style)
     {
+        var wasMaximized = !NativeMethods.IsIconic(hwnd) && NativeMethods.IsZoomed(hwnd);
+
         NativeMethods.SetWindowLong(hwnd, NativeMethods.GWL_STYLE, style);
         RefreshFrame(hwnd);
+
+        // 恢复 WS_THICKFRAME 会让最大化窗口退回还原状态，这里再最大化一次。
+        if (wasMaximized && !NativeMethods.IsZoomed(hwnd))
+        {
+            NativeMethods.ShowWindow(hwnd, NativeMethods.SW_MAXIMIZE);
+        }
     }
 
     private static void RefreshFrame(IntPtr hwnd) =>
