@@ -44,6 +44,8 @@ public sealed class ZoneTitleDragHook : IDisposable
     private WindowInfo? _pendingInfo;
     private NativeMethods.POINT _downPoint;
     private bool _dragging;
+    private bool _replayOnClick;
+    private bool _blockOnly;
     private bool _swallowNextUp;
     private List<ZonePlacement>? _dragPlacements;
     private WindowRect _dragArea;
@@ -198,19 +200,22 @@ public sealed class ZoneTitleDragHook : IDisposable
 
             if (message == NativeMethods.WM_LBUTTONDOWN)
             {
-                if (TryGetCaptionWindow(info.pt, out var hwnd, out var window))
+                if (TryGetInterceptWindow(
+                        info.pt, out var hwnd, out var window, out var replay, out var block))
                 {
                     _pendingWindow = hwnd;
                     _pendingInfo = window;
                     _downPoint = info.pt;
                     _dragging = false;
+                    _replayOnClick = replay;
+                    _blockOnly = block;
                     _swallowNextUp = true;
                     return new IntPtr(1);
                 }
             }
             else if (message == NativeMethods.WM_MOUSEMOVE && _pendingWindow != IntPtr.Zero)
             {
-                if (!_dragging)
+                if (!_dragging && !_blockOnly)
                 {
                     var dx = info.pt.X - _downPoint.X;
                     var dy = info.pt.Y - _downPoint.Y;
@@ -247,13 +252,27 @@ public sealed class ZoneTitleDragHook : IDisposable
                 var wasDragging = _dragging;
                 var source = _pendingInfo;
                 var sourceHwnd = _pendingWindow;
+                var replayClick = _replayOnClick;
+                var blockOnly = _blockOnly;
                 _pendingWindow = IntPtr.Zero;
                 _pendingInfo = null;
                 _dragging = false;
+                _replayOnClick = false;
+                _blockOnly = false;
 
                 if (!wasDragging)
                 {
-                    HandleClick(sourceHwnd);
+                    // 自定义标题栏/边框上的点击被我们吞掉了，没拖拽就补发一次，
+                    // 让标签页、工具按钮照常响应。
+                    if (replayClick && !blockOnly)
+                    {
+                        ReplayClick(_downPoint);
+                    }
+                    else if (!blockOnly)
+                    {
+                        HandleClick(sourceHwnd);
+                    }
+
                     return new IntPtr(1);
                 }
 
@@ -305,11 +324,21 @@ public sealed class ZoneTitleDragHook : IDisposable
         _lastClickTick = now;
     }
 
-    private bool TryGetCaptionWindow(
-        NativeMethods.POINT point, out IntPtr hwnd, out WindowInfo? window)
+    /// <summary>
+    /// 判断这次按下是否应该由钩子接管：
+    /// - 命中标题栏 → 走交换预览；
+    /// - 命中自定义标题栏的客户区（顶部标题带内）→ 吞掉，松手没拖动就补发点击；
+    /// - 命中缩放边框 → 只吞掉，阻止系统原生缩放/移动。
+    /// 这样无论窗口用经典标题栏还是自绘标题栏，都不会被系统自己拖着走。
+    /// </summary>
+    private bool TryGetInterceptWindow(
+        NativeMethods.POINT point, out IntPtr hwnd, out WindowInfo? window,
+        out bool replay, out bool block)
     {
         hwnd = IntPtr.Zero;
         window = null;
+        replay = false;
+        block = false;
 
         var workspace = _getWorkspace();
         if (workspace == null)
@@ -346,13 +375,103 @@ public sealed class ZoneTitleDragHook : IDisposable
         var result = NativeMethods.SendMessageTimeout(
             root, NativeMethods.WM_NCHITTEST, IntPtr.Zero, lParam,
             NativeMethods.SMTO_ABORTIFHUNG, 50, out var hit);
-        if (result == IntPtr.Zero || hit.ToInt64() != NativeMethods.HTCAPTION)
+        if (result == IntPtr.Zero)
         {
             return false;
         }
 
         hwnd = root;
-        return true;
+        var code = (int)hit.ToInt64();
+
+        if (code == NativeMethods.HTCAPTION)
+        {
+            return true;
+        }
+
+        // 系统按钮/菜单不碰，否则最小化/最大化/关闭会失灵。
+        if (code is NativeMethods.HTSYSMENU or NativeMethods.HTMENU or
+            NativeMethods.HTMINBUTTON or NativeMethods.HTMAXBUTTON or
+            NativeMethods.HTCLOSE or NativeMethods.HTHELP)
+        {
+            return false;
+        }
+
+        // 缩放边框：吞掉按下，阻止系统原生 resize/移动；不进入交换预览。
+        if (code is NativeMethods.HTLEFT or NativeMethods.HTRIGHT or
+            NativeMethods.HTTOP or NativeMethods.HTTOPLEFT or NativeMethods.HTTOPRIGHT or
+            NativeMethods.HTBOTTOM or NativeMethods.HTBOTTOMLEFT or NativeMethods.HTBOTTOMRIGHT)
+        {
+            replay = false;
+            block = true;
+            return true;
+        }
+
+        // 自定义标题栏：WM_NCHITTEST 返回 HTCLIENT，但应用可能在这里实现窗口拖动。
+        // 只接管窗口顶部标题带，松手没拖动就补发点击，标签页/工具按钮照常工作。
+        if (code == NativeMethods.HTCLIENT && InCaptionBand(root, point))
+        {
+            replay = true;
+            return true;
+        }
+
+        hwnd = IntPtr.Zero;
+        window = null;
+        return false;
+    }
+
+    /// <summary>点是否落在窗口顶部的标题带里（含高 DPI 缩放）。</summary>
+    private static bool InCaptionBand(IntPtr root, NativeMethods.POINT point)
+    {
+        var visible = WindowOps.GetVisibleBounds(root);
+        if (visible == null)
+        {
+            return false;
+        }
+
+        var dpi = NativeMethods.GetDpiForWindow(root);
+        if (dpi == 0)
+        {
+            dpi = 96;
+        }
+
+        var caption = NativeMethods.GetSystemMetricsForDpi(NativeMethods.SM_CYCAPTION, dpi);
+        if (caption <= 0)
+        {
+            caption = 23;
+        }
+
+        // 经典标题栏高度 + 一点余量，封顶 64px：覆盖 Chromium/Electron 加高的标签栏，
+        // 又不至于把工具栏整个吞掉。
+        var band = Math.Clamp(caption + 16, 36, 64);
+        return point.Y >= visible.Value.Top && point.Y < visible.Value.Top + band;
+    }
+
+    /// <summary>把被吞掉的点击补发给点击位置下的窗口（标签页、按钮等）。</summary>
+    private void ReplayClick(NativeMethods.POINT point)
+    {
+        var target = NativeMethods.WindowFromPoint(point);
+        if (target == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var root = NativeMethods.GetAncestor(target, NativeMethods.GA_ROOT);
+        if (root != IntPtr.Zero)
+        {
+            NativeMethods.SetForegroundWindow(root);
+        }
+
+        var client = point;
+        if (!NativeMethods.ScreenToClient(target, ref client))
+        {
+            return;
+        }
+
+        var lParam = unchecked((IntPtr)((client.Y << 16) | (client.X & 0xFFFF)));
+        NativeMethods.PostMessage(
+            target, NativeMethods.WM_LBUTTONDOWN, new IntPtr(NativeMethods.MK_LBUTTON), lParam);
+        NativeMethods.PostMessage(
+            target, NativeMethods.WM_LBUTTONUP, IntPtr.Zero, lParam);
     }
 
     private ZonePlacement? FindTarget(NativeMethods.POINT point)

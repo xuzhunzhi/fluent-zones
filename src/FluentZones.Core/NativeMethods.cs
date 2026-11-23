@@ -32,6 +32,24 @@ internal static class NativeMethods
     internal const uint LWA_COLORKEY = 0x00000001;
     internal const uint LWA_ALPHA = 0x00000002;
     internal const int HTCAPTION = 2;
+    internal const int HTCLIENT = 1;
+    internal const int HTSYSMENU = 3;
+    internal const int HTMENU = 5;
+    internal const int HTMINBUTTON = 8;
+    internal const int HTMAXBUTTON = 9;
+    internal const int HTLEFT = 10;
+    internal const int HTRIGHT = 11;
+    internal const int HTTOP = 12;
+    internal const int HTTOPLEFT = 13;
+    internal const int HTTOPRIGHT = 14;
+    internal const int HTBOTTOM = 15;
+    internal const int HTBOTTOMLEFT = 16;
+    internal const int HTBOTTOMRIGHT = 17;
+    internal const int HTCLOSE = 20;
+    internal const int HTHELP = 21;
+    internal const int MK_LBUTTON = 0x0001;
+    internal const int SM_CYCAPTION = 4;
+    internal const int WM_CANCELMODE = 0x001F;
     internal const uint PW_RENDERFULLCONTENT = 0x00000002;
 
     internal const int WM_PAINT = 0x000F;
@@ -373,6 +391,9 @@ internal static class NativeMethods
     internal static extern IntPtr WindowFromPoint(POINT point);
 
     [DllImport("user32.dll")]
+    internal static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
     internal static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
 
     internal const uint GA_ROOT = 2;
@@ -444,6 +465,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern uint GetDpiForWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    internal static extern int GetSystemMetricsForDpi(int nIndex, uint dpi);
 
     [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     internal struct TOKEN_ELEVATION

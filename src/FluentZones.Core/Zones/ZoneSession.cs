@@ -51,6 +51,7 @@ public sealed class ZoneSession : IDisposable
     // 被用户拖到其它显示器的窗口：拖回来时允许重新入槽。
     private readonly HashSet<IntPtr> _detached = new();
     private readonly HashSet<IntPtr> _resumeMaxQueued = new();
+    private readonly HashSet<IntPtr> _nativeMoveHandled = new();
     private bool _minimizeSyncQueued;
     private bool _snappingBack;
 
@@ -369,6 +370,7 @@ public sealed class ZoneSession : IDisposable
         _maximized.Clear();
         _detached.Clear();
         _resumeMaxQueued.Clear();
+        _nativeMoveHandled.Clear();
         _minimizeSyncQueued = false;
         _snappingBack = false;
         RestoreWhitelistTopmost();
@@ -951,6 +953,11 @@ public sealed class ZoneSession : IDisposable
                 return;
             }
 
+            if ((NativeMethods.GetAsyncKeyState(NativeMethods.VK_LBUTTON) & 0x8000) == 0)
+            {
+                _nativeMoveHandled.Remove(hwnd);
+            }
+
             if (_windowHandles.Contains(hwnd))
             {
                 // 最小化动画期间窗口矩形会跑到屏幕外，不能拉回槽位。
@@ -988,12 +995,13 @@ public sealed class ZoneSession : IDisposable
                 }
 
                 // 左键按住时窗口自己动了：说明标题栏拖拽没被钩子拦住（自定义标题栏、
-                // 拖的是缩放边框、或应用自己实现了拖动）。立刻按槽位扶正，保证窗口
-                // 不跟着鼠标走；真正的重排等松手后再做。
+                // 拖的是缩放边框、或应用自己实现了拖动）。先尝试取消系统的移动循环，
+                // 再按槽位扶正一次；同一次按住里不重复扶正，否则会和系统 move loop
+                // 来回打架，窗口一直抖。
                 if ((NativeMethods.GetAsyncKeyState(NativeMethods.VK_LBUTTON) & 0x8000) != 0 &&
                     !_swapInProgress)
                 {
-                    SnapBack(hwnd);
+                    HandleNativeMove(hwnd);
                     return;
                 }
 
@@ -1337,6 +1345,30 @@ public sealed class ZoneSession : IDisposable
         };
         var monitor = NativeMethods.MonitorFromPoint(center, NativeMethods.MONITOR_DEFAULTTONEAREST);
         return monitor == IntPtr.Zero || monitor == Monitor;
+    }
+
+    /// <summary>
+    /// 系统自己开始移动/缩放窗口时的兜底：先发 <c>WM_CANCELMODE</c> 结束它的
+    /// 模态 move/size 循环，再按槽位扶正一次。同一次按住只做一次，
+    /// 避免“移动 → 扶正 → 再移动”的持续抖动。
+    /// </summary>
+    private void HandleNativeMove(IntPtr handle)
+    {
+        if (!_nativeMoveHandled.Add(handle))
+        {
+            return;
+        }
+
+        NativeMethods.GetCursorPos(out var cursor);
+        var visible = WindowOps.GetVisibleBounds(handle);
+        LayoutLog.Write(new[]
+        {
+            "=== native move " + $"0x{handle.ToInt64():X} cursor={cursor.X},{cursor.Y}",
+            "  visible=" + (visible?.ToString() ?? "?"),
+        });
+
+        NativeMethods.PostMessage(handle, NativeMethods.WM_CANCELMODE, IntPtr.Zero, IntPtr.Zero);
+        SnapBack(handle);
     }
 
     /// <summary>
