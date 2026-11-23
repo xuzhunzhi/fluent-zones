@@ -50,7 +50,9 @@ public sealed class ZoneSession : IDisposable
 
     // 被用户拖到其它显示器的窗口：拖回来时允许重新入槽。
     private readonly HashSet<IntPtr> _detached = new();
+    private readonly HashSet<IntPtr> _resumeMaxQueued = new();
     private bool _minimizeSyncQueued;
+    private bool _snappingBack;
 
     private ZoneDragHook? _dragHook;
     private ZoneTitleDragHook? _titleHook;
@@ -366,7 +368,9 @@ public sealed class ZoneSession : IDisposable
         _minimized.Clear();
         _maximized.Clear();
         _detached.Clear();
+        _resumeMaxQueued.Clear();
         _minimizeSyncQueued = false;
+        _snappingBack = false;
         RestoreWhitelistTopmost();
         _windowHandles.Clear();
         _lastOrder.Clear();
@@ -970,9 +974,9 @@ public sealed class ZoneSession : IDisposable
                     return;
                 }
 
-                if (_maximized.Remove(hwnd))
+                if (_maximized.Contains(hwnd))
                 {
-                    _ = ResumeMaximizedAsync(hwnd);
+                    ScheduleResumeMaximized(hwnd);
                     return;
                 }
 
@@ -980,6 +984,16 @@ public sealed class ZoneSession : IDisposable
                 if (!IsOnWorkspaceMonitor(hwnd))
                 {
                     DetachWindow(hwnd, "窗口移到了其它显示器");
+                    return;
+                }
+
+                // 左键按住时窗口自己动了：说明标题栏拖拽没被钩子拦住（自定义标题栏、
+                // 拖的是缩放边框、或应用自己实现了拖动）。立刻按槽位扶正，保证窗口
+                // 不跟着鼠标走；真正的重排等松手后再做。
+                if ((NativeMethods.GetAsyncKeyState(NativeMethods.VK_LBUTTON) & 0x8000) != 0 &&
+                    !_swapInProgress)
+                {
+                    SnapBack(hwnd);
                     return;
                 }
 
@@ -1182,64 +1196,89 @@ public sealed class ZoneSession : IDisposable
             "分区模式：窗口已最大化（槽位保留），还原后会回到原槽位", ZoneStatusLevel.Info);
     }
 
+    private void ScheduleResumeMaximized(IntPtr handle)
+    {
+        if (!_resumeMaxQueued.Add(handle))
+        {
+            return;
+        }
+
+        _ = ResumeMaximizedAsync(handle);
+    }
+
     /// <summary>取消最大化后等动画/拖拽结束，再把窗口放回槽位并补回分区边框。</summary>
     private async Task ResumeMaximizedAsync(IntPtr handle)
     {
         var generation = _sessionGeneration;
 
-        // 用户可能是按住标题栏把最大化窗口拖下来：等左键松开再处理，
-        // 否则会在拖拽中途把窗口拉回槽位。
-        var waited = 0;
-        while ((NativeMethods.GetAsyncKeyState(NativeMethods.VK_LBUTTON) & 0x8000) != 0 &&
-               waited < 4000)
+        try
         {
-            await Task.Delay(100);
-            waited += 100;
+            // 用户可能是按住标题栏把最大化窗口拖下来：等左键松开再处理，
+            // 否则会在拖拽中途把窗口拉回槽位。
+            var waited = 0;
+            while ((NativeMethods.GetAsyncKeyState(NativeMethods.VK_LBUTTON) & 0x8000) != 0 &&
+                   waited < 4000)
+            {
+                await Task.Delay(100);
+                waited += 100;
+            }
+
+            await Task.Delay(120);
+
+            if (Workspace == null || _swapInProgress || generation != _sessionGeneration)
+            {
+                return;
+            }
+
+            if (!NativeMethods.IsWindow(handle))
+            {
+                _maximized.Remove(handle);
+                return;
+            }
+
+            // 会话已重建或已经处理过
+            if (!_maximized.Contains(handle))
+            {
+                return;
+            }
+
+            // 还原动画期间又被最大化了：继续保持挂起，等下一次还原事件。
+            if (NativeMethods.IsZoomed(handle))
+            {
+                return;
+            }
+
+            _maximized.Remove(handle);
+
+            if (_minimized.Contains(handle) || NativeMethods.IsIconic(handle))
+            {
+                return;
+            }
+
+            // 拖到了另一台显示器：移出工作区，不再拉回。
+            if (!IsOnWorkspaceMonitor(handle))
+            {
+                DetachWindow(handle, "窗口移到了其它显示器");
+                return;
+            }
+
+            // 最大化时把强调色边框去掉了（样式没动），还原后补回来。
+            if (_bordered.Contains(handle))
+            {
+                WindowOps.SetBorderColor(handle, WindowOps.ZoneBorderColor);
+            }
+
+            LayoutLog.Write(new[]
+            {
+                "=== unmaximize " + $"0x{handle.ToInt64():X}",
+            });
+
+            Apply(Workspace);
         }
-
-        await Task.Delay(120);
-
-        if (Workspace == null || _swapInProgress || generation != _sessionGeneration)
+        finally
         {
-            return;
+            _resumeMaxQueued.Remove(handle);
         }
-
-        if (!NativeMethods.IsWindow(handle))
-        {
-            return;
-        }
-
-        // 还原动画期间又被最大化了
-        if (NativeMethods.IsZoomed(handle))
-        {
-            _maximized.Add(handle);
-            return;
-        }
-
-        if (_minimized.Contains(handle) || NativeMethods.IsIconic(handle))
-        {
-            return;
-        }
-
-        // 拖到了另一台显示器：移出工作区，不再拉回。
-        if (!IsOnWorkspaceMonitor(handle))
-        {
-            DetachWindow(handle, "窗口移到了其它显示器");
-            return;
-        }
-
-        // 最大化时把强调色边框去掉了（样式没动），还原后补回来。
-        if (_bordered.Contains(handle))
-        {
-            WindowOps.SetBorderColor(handle, WindowOps.ZoneBorderColor);
-        }
-
-        LayoutLog.Write(new[]
-        {
-            "=== unmaximize " + $"0x{handle.ToInt64():X}",
-        });
-
-        Apply(Workspace);
     }
 
     /// <summary>
@@ -1298,6 +1337,58 @@ public sealed class ZoneSession : IDisposable
         };
         var monitor = NativeMethods.MonitorFromPoint(center, NativeMethods.MONITOR_DEFAULTTONEAREST);
         return monitor == IntPtr.Zero || monitor == Monitor;
+    }
+
+    /// <summary>
+    /// 左键按住时窗口被系统自己移动/缩放（标题栏拖拽没被钩子拦住，或拖的是缩放边框）：
+    /// 立刻按当前槽位摆回去，让它看起来被“钉”住，不跟随鼠标。
+    /// 只摆这一个窗口，不走整轮 Apply，避免牵连其它窗口和长宽比占位。
+    /// </summary>
+    private void SnapBack(IntPtr handle)
+    {
+        if (_snappingBack || Workspace == null || PlaceRequested == null)
+        {
+            return;
+        }
+
+        ZonePlacement? target = null;
+        foreach (var placement in BuildLayout(Workspace).Placements)
+        {
+            if (placement.Window.Handle == handle)
+            {
+                target = placement;
+                break;
+            }
+        }
+
+        if (target == null)
+        {
+            return;
+        }
+
+        var actual = WindowOps.GetVisibleBounds(handle);
+        if (actual == null)
+        {
+            return;
+        }
+
+        if (Math.Abs(actual.Value.Left - target.Rect.Left) <= 2 &&
+            Math.Abs(actual.Value.Top - target.Rect.Top) <= 2 &&
+            Math.Abs(actual.Value.Width - target.Rect.Width) <= 2 &&
+            Math.Abs(actual.Value.Height - target.Rect.Height) <= 2)
+        {
+            return;
+        }
+
+        _snappingBack = true;
+        try
+        {
+            PlaceRequested.Invoke(new[] { target });
+        }
+        finally
+        {
+            _snappingBack = false;
+        }
     }
 
     private bool _realignQueued;
@@ -1386,6 +1477,8 @@ public sealed class ZoneSession : IDisposable
 
             if (_maximized.Contains(handle))
             {
+                // 已经不在最大化状态（上面 IsZoomed 为 false）：等拖拽结束再放回槽位。
+                ScheduleResumeMaximized(handle);
                 continue;
             }
 
