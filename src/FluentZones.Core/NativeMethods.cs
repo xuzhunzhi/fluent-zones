@@ -112,16 +112,6 @@ internal static class NativeMethods
     internal const uint MONITOR_DEFAULTTONEAREST = 2;
     internal const uint MONITOR_DEFAULTTOPRIMARY = 1;
 
-    // AppBar / 任务栏
-    internal const uint ABM_GETSTATE = 4;
-    internal const uint ABM_GETTASKBARPOS = 5;
-    internal const uint ABM_GETAUTOHIDEBAREX = 11;
-    internal const uint ABS_AUTOHIDE = 0x00000001;
-    internal const int ABE_LEFT = 0;
-    internal const int ABE_TOP = 1;
-    internal const int ABE_RIGHT = 2;
-    internal const int ABE_BOTTOM = 3;
-
     internal const int WM_HOTKEY = 0x0312;
     internal const int WM_CLOSE = 0x0010;
     internal const int WM_DESTROY = 0x0002;
@@ -273,17 +263,6 @@ internal static class NativeMethods
         public RECT rcMonitor;
         public RECT rcWork;
         public uint dwFlags;
-    }
-
-    [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-    internal struct APPBARDATA
-    {
-        public int cbSize;
-        public IntPtr hWnd;
-        public uint uCallbackMessage;
-        public uint uEdge;
-        public RECT rc;
-        public IntPtr lParam;
     }
 
     [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
@@ -457,12 +436,6 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    internal static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
-
-    [DllImport("shell32.dll")]
-    internal static extern UIntPtr SHAppBarMessage(uint dwMessage, ref APPBARDATA pData);
 
     [DllImport("user32.dll")]
     internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
@@ -689,198 +662,6 @@ internal static class NativeMethods
         }
 
         return new RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
-    }
-
-    /// <summary>
-    /// 动态避让：只把**当前实际显示**的自动隐藏任务栏算进去。
-    /// 任务栏滑出时窗口让开，收起后恢复铺满。
-    /// </summary>
-    internal static RECT GetDynamicWorkArea(IntPtr monitor)
-    {
-        var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
-        if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info))
-        {
-            var primary = MonitorFromPoint(new POINT { X = 0, Y = 0 }, MONITOR_DEFAULTTOPRIMARY);
-            if (primary == IntPtr.Zero || !GetMonitorInfo(primary, ref info))
-            {
-                return new RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
-            }
-        }
-
-        var work = info.rcWork;
-        foreach (var (edge, handle, thickness) in EnumerateTaskbars(info.rcMonitor))
-        {
-            if (!IsTaskbarVisible(handle, info.rcMonitor, edge))
-            {
-                continue;
-            }
-
-            ReserveEdge(ref work, info.rcMonitor, edge, thickness);
-        }
-
-        return work;
-    }
-
-    /// <summary>枚举当前显示器上的任务栏（主任务栏 + 每屏自动隐藏任务栏），带边和厚度。</summary>
-    private static List<(int Edge, IntPtr Handle, int Thickness)> EnumerateTaskbars(RECT monitorRect)
-    {
-        var result = new List<(int Edge, IntPtr Handle, int Thickness)>();
-
-        void Add(int edge, IntPtr handle, int thickness)
-        {
-            if (handle == IntPtr.Zero || thickness <= 0)
-            {
-                return;
-            }
-
-            if (result.Any(b => b.Edge == edge && b.Handle == handle))
-            {
-                return;
-            }
-
-            result.Add((edge, handle, thickness));
-        }
-
-        var state = new APPBARDATA { cbSize = Marshal.SizeOf<APPBARDATA>() };
-        var autoHide = (SHAppBarMessage(ABM_GETSTATE, ref state).ToUInt64() & ABS_AUTOHIDE) != 0;
-        if (autoHide)
-        {
-            var primary = new APPBARDATA
-            {
-                cbSize = Marshal.SizeOf<APPBARDATA>(),
-                hWnd = FindWindow("Shell_TrayWnd", null),
-            };
-            if (primary.hWnd != IntPtr.Zero &&
-                SHAppBarMessage(ABM_GETTASKBARPOS, ref primary) != UIntPtr.Zero)
-            {
-                var rect = primary.rc;
-                var intersects = rect.Right > monitorRect.Left && rect.Left < monitorRect.Right &&
-                                 rect.Bottom > monitorRect.Top && rect.Top < monitorRect.Bottom;
-                if (intersects)
-                {
-                    var thickness = primary.uEdge is ABE_TOP or ABE_BOTTOM
-                        ? rect.Bottom - rect.Top
-                        : rect.Right - rect.Left;
-                    Add((int)primary.uEdge, primary.hWnd, thickness);
-                }
-            }
-        }
-
-        // 每台显示器自己的自动隐藏任务栏
-        for (var edge = ABE_LEFT; edge <= ABE_BOTTOM; edge++)
-        {
-            var bar = new APPBARDATA
-            {
-                cbSize = Marshal.SizeOf<APPBARDATA>(),
-                uEdge = (uint)edge,
-                rc = monitorRect,
-            };
-            var handle = SHAppBarMessage(ABM_GETAUTOHIDEBAREX, ref bar);
-            if (handle == UIntPtr.Zero)
-            {
-                continue;
-            }
-
-            var hwnd = (IntPtr)(long)handle.ToUInt64();
-            Add(edge, hwnd, GetAutoHideThickness(hwnd, edge));
-        }
-
-        return result;
-    }
-
-    /// <summary>任务栏当前是否真的滑出来了：在它那条边内侧取样，看命中的是不是任务栏。</summary>
-    private static bool IsTaskbarVisible(IntPtr hwnd, RECT monitorRect, int edge)
-    {
-        var width = monitorRect.Right - monitorRect.Left;
-        var height = monitorRect.Bottom - monitorRect.Top;
-        const int inset = 10;
-
-        for (var i = 1; i <= 3; i++)
-        {
-            var fraction = i / 4.0;
-            var x = monitorRect.Left + (int)(width * fraction);
-            var y = monitorRect.Top + (int)(height * fraction);
-
-            switch (edge)
-            {
-                case ABE_LEFT:
-                    x = monitorRect.Left + inset;
-                    break;
-                case ABE_TOP:
-                    y = monitorRect.Top + inset;
-                    break;
-                case ABE_RIGHT:
-                    x = monitorRect.Right - inset;
-                    break;
-                case ABE_BOTTOM:
-                    y = monitorRect.Bottom - inset;
-                    break;
-            }
-
-            var under = WindowFromPoint(new POINT { X = x, Y = y });
-            if (under == IntPtr.Zero)
-            {
-                continue;
-            }
-
-            var root = GetAncestor(under, GA_ROOT);
-            if (root == hwnd)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static int GetAutoHideThickness(IntPtr hwnd, int edge)
-    {
-        if (GetWindowRect(hwnd, out var rect))
-        {
-            var thickness = edge is ABE_TOP or ABE_BOTTOM
-                ? rect.Bottom - rect.Top
-                : rect.Right - rect.Left;
-            if (thickness >= 8 && thickness <= 200)
-            {
-                return thickness;
-            }
-        }
-
-        var dpi = GetDpiForWindow(hwnd);
-        if (dpi == 0)
-        {
-            dpi = 96;
-        }
-
-        return (int)Math.Round(48.0 * dpi / 96.0);
-    }
-
-    private static void ReserveEdge(ref RECT work, RECT monitorRect, int edge, int thickness)
-    {
-        if (thickness <= 0)
-        {
-            return;
-        }
-
-        const int minimum = 80;
-        switch (edge)
-        {
-            case ABE_LEFT when work.Left <= monitorRect.Left:
-                work.Left = Math.Min(work.Right - minimum, monitorRect.Left + thickness);
-                break;
-
-            case ABE_TOP when work.Top <= monitorRect.Top:
-                work.Top = Math.Min(work.Bottom - minimum, monitorRect.Top + thickness);
-                break;
-
-            case ABE_RIGHT when work.Right >= monitorRect.Right:
-                work.Right = Math.Max(work.Left + minimum, monitorRect.Right - thickness);
-                break;
-
-            case ABE_BOTTOM when work.Bottom >= monitorRect.Bottom:
-                work.Bottom = Math.Max(work.Top + minimum, monitorRect.Bottom - thickness);
-                break;
-        }
     }
 
     internal static IntPtr GetCursorMonitor()
