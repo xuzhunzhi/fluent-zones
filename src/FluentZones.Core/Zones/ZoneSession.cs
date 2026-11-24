@@ -57,6 +57,7 @@ public sealed class ZoneSession : IDisposable
 
     private ZoneDragHook? _dragHook;
     private ZoneTitleDragHook? _titleHook;
+    private ZoneHoverWatcher? _hoverWatcher;
     private WinEventWatcher? _watcher;
     private bool _syncQueued;
     private bool _candidateSyncQueued;
@@ -341,6 +342,8 @@ public sealed class ZoneSession : IDisposable
         _dragHook = null;
         _titleHook?.Dispose();
         _titleHook = null;
+        _hoverWatcher?.Dispose();
+        _hoverWatcher = null;
     }
 
     private void Close(bool notifyStatus)
@@ -351,6 +354,7 @@ public sealed class ZoneSession : IDisposable
         RestoreBorders();
         _dragHook?.Hide();
         _titleHook?.Hide();
+        _hoverWatcher?.Stop();
         Workspace = null;
         _swapInProgress = false;
         _whitelistIgnoredNotified = false;
@@ -622,6 +626,7 @@ public sealed class ZoneSession : IDisposable
         _swapInProgress = true;
         // 拖拽期间不再把此前的 SHOW 候选带到拖拽结束后触发。
         _pendingShow.Clear();
+        LayoutLog.Write(new[] { "=== swap drag start" });
     }
 
     /// <summary>结束标题栏拖拽交换；下一轮窗口事件/重排恢复正常。</summary>
@@ -793,6 +798,13 @@ public sealed class ZoneSession : IDisposable
 
     private void EnsureTitleHook()
     {
+        if (_hoverWatcher == null)
+        {
+            _hoverWatcher = new ZoneHoverWatcher(() => Workspace);
+        }
+
+        _hoverWatcher.Start();
+
         if (_titleHook != null)
         {
             return;

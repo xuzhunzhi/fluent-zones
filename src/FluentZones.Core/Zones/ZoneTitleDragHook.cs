@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace FluentZones.Core;
 
@@ -13,8 +12,14 @@ public sealed class ZoneTitleDragHook : IDisposable
 {
     private const int WmHide = 0x8000 + 61;
     private const int WmThumbReady = 0x8000 + 63;
+    private const int WmReinstallHook = 0x8000 + 70;
     private const int DragThreshold = 4;
     private const int ThumbnailDeadlineMs = 150;
+
+    // 补发点击时写进 dwExtraInfo 的签名：只放行自己注入的事件，
+    // 不要用 LLMHF_INJECTED 一刀切——某些远程桌面/鼠标驱动注入的物理操作
+    // 也会带这个标志，一刀切会让整个交换功能失效。
+    private const long ReplayExtraInfo = 0x464C5A31;   // "FLZ1"
 
     private readonly Func<ZoneWorkspace?> _getWorkspace;
     private readonly ManualResetEventSlim _ready = new(false);
@@ -25,6 +30,10 @@ public sealed class ZoneTitleDragHook : IDisposable
     private Thread? _thread;
     private uint _threadId;
     private IntPtr _hook;
+    private System.Threading.Timer? _watchdog;
+    private long _lastEventTick;
+    private NativeMethods.POINT _lastCursor;
+    private readonly object _watchGate = new();
     private IntPtr _thumbHwnd;
     private IntPtr _grayHwnd;
     private IntPtr _thumbDc;
@@ -48,7 +57,6 @@ public sealed class ZoneTitleDragHook : IDisposable
     private bool _replayOnClick;
     private bool _blockOnly;
     private bool _swallowNextUp;
-    private IntPtr _lastHoverRoot;
     private List<ZonePlacement>? _dragPlacements;
     private WindowRect _dragArea;
     private IntPtr _lastClickWindow;
@@ -105,7 +113,6 @@ public sealed class ZoneTitleDragHook : IDisposable
     /// <summary>退出工作区时清理半透明缩略图/灰色覆盖层和未完成的拖拽。</summary>
     public void Hide()
     {
-        _lastHoverRoot = IntPtr.Zero;
         if (_thread != null)
         {
             NativeMethods.PostThreadMessage(_threadId, WmHide, IntPtr.Zero, IntPtr.Zero);
@@ -171,6 +178,11 @@ public sealed class ZoneTitleDragHook : IDisposable
 
         _ready.Set();
 
+        // 低层钩子被系统因超时静默摘除时，光标还会动但再也收不到 WM_MOUSEMOVE。
+        // 定时检查：超过 2 秒没有事件、但光标位置变了 → 让钩子线程重新安装。
+        _watchdog = new System.Threading.Timer(
+            _ => CheckHook(), null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+
         while (NativeMethods.GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
             if (msg.message == WmHide)
@@ -185,8 +197,21 @@ public sealed class ZoneTitleDragHook : IDisposable
                 continue;
             }
 
-            NativeMethods.TranslateMessage(ref msg);
-            NativeMethods.DispatchMessage(ref msg);
+            if (msg.message == WmReinstallHook)
+            {
+                ReinstallHook();
+                continue;
+            }
+
+            try
+            {
+                NativeMethods.TranslateMessage(ref msg);
+                NativeMethods.DispatchMessage(ref msg);
+            }
+            catch
+            {
+                // 单个回调抛异常不能让整个鼠标钩子线程退出，否则交换会静默失效。
+            }
         }
 
         NativeMethods.UnhookWindowsHookEx(_hook);
@@ -194,25 +219,76 @@ public sealed class ZoneTitleDragHook : IDisposable
         CleanupSurfaces();
     }
 
+    private void CheckHook()
+    {
+        if (_getWorkspace() == null)
+        {
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _lastEventTick) < 2000)
+        {
+            return;
+        }
+
+        if (!NativeMethods.GetCursorPos(out var point))
+        {
+            return;
+        }
+
+        lock (_watchGate)
+        {
+            if (point.X == _lastCursor.X && point.Y == _lastCursor.Y)
+            {
+                return;
+            }
+
+            _lastCursor = point;
+        }
+
+        NativeMethods.PostThreadMessage(_threadId, WmReinstallHook, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    private void ReinstallHook()
+    {
+        if (_proc == null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_hook != IntPtr.Zero)
+            {
+                NativeMethods.UnhookWindowsHookEx(_hook);
+            }
+
+            _hook = NativeMethods.SetWindowsHookEx(
+                NativeMethods.WH_MOUSE_LL, _proc, NativeMethods.GetModuleHandle(null), 0);
+            Interlocked.Exchange(ref _lastEventTick, Environment.TickCount64);
+        }
+        catch
+        {
+            // 下一轮 watchdog 再试
+        }
+    }
+
     private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode >= 0)
         {
+            Interlocked.Exchange(ref _lastEventTick, Environment.TickCount64);
+
             var info = Marshal.PtrToStructure<NativeMethods.MSLLHOOKSTRUCT>(lParam);
 
-            // 自己补发的点击（以及别的工具注入的输入）直接放行，不能再被本钩子接管，
-            // 否则补发点击会无限循环。
-            if ((info.flags & NativeMethods.LLMHF_INJECTED) != 0)
+            // 只放行自己补发的点击，避免注入事件被本钩子再次接管。
+            if (info.dwExtraInfo == new IntPtr(ReplayExtraInfo))
             {
                 return NativeMethods.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
             var message = wParam.ToInt32();
-
-            if (message == NativeMethods.WM_MOUSEMOVE)
-            {
-                TrackHoverLeave(info.pt);
-            }
 
             if (message == NativeMethods.WM_LBUTTONDOWN)
             {
@@ -317,51 +393,6 @@ public sealed class ZoneTitleDragHook : IDisposable
         }
 
         return NativeMethods.CallNextHookEx(_hook, nCode, wParam, lParam);
-    }
-
-    /// <summary>
-    /// 鼠标从一个工作区窗口移到别处时，补发一次 <c>WM_MOUSELEAVE</c>。
-    /// Edge/Chromium 的垂直标签栏靠鼠标离开通知收起；窗口贴边、快速跨窗口或
-    /// 系统没发 leave 时，标签栏会卡在展开状态。
-    /// </summary>
-    private void TrackHoverLeave(NativeMethods.POINT point)
-    {
-        if (_pendingWindow != IntPtr.Zero)
-        {
-            return;
-        }
-
-        var workspace = _getWorkspace();
-        if (workspace == null)
-        {
-            _lastHoverRoot = IntPtr.Zero;
-            return;
-        }
-
-        var under = NativeMethods.WindowFromPoint(point);
-        var root = under == IntPtr.Zero
-            ? IntPtr.Zero
-            : NativeMethods.GetAncestor(under, NativeMethods.GA_ROOT);
-
-        if (root == _lastHoverRoot)
-        {
-            return;
-        }
-
-        var previous = _lastHoverRoot;
-        _lastHoverRoot = root;
-
-        if (previous == IntPtr.Zero)
-        {
-            return;
-        }
-
-        if (!workspace.WindowsInOrder().Any(w => w.Handle == previous))
-        {
-            return;
-        }
-
-        NativeMethods.PostMessage(previous, NativeMethods.WM_MOUSELEAVE, IntPtr.Zero, IntPtr.Zero);
     }
 
     private void HandleClick(IntPtr hwnd)
@@ -471,10 +502,8 @@ public sealed class ZoneTitleDragHook : IDisposable
         // 只接管窗口顶部标题带，松手没拖动就补发点击，标签页/工具按钮照常工作。
         if (code == NativeMethods.HTCLIENT && InCaptionBand(root, point))
         {
-            // Explorer / UWP 的自绘标题栏把最小化/最大化/关闭也画在客户区里，
-            // 整条标题带都吞掉会让右上角三键失效；这类窗口以及标准按钮区域不接管，
-            // 交给位置兜底（系统拖动会被取消并扶正一次）。
-            if (IsShellHostWindow(root) || IsCaptionButtonArea(root, point))
+            // 标准按钮区域不接管，保证右上角三键可用；其余标题带交给交换/点击补发。
+            if (IsCaptionButtonArea(root, point))
             {
                 hwnd = IntPtr.Zero;
                 window = null;
@@ -517,18 +546,6 @@ public sealed class ZoneTitleDragHook : IDisposable
         return point.Y >= visible.Value.Top && point.Y < visible.Value.Top + band;
     }
 
-    /// <summary>
-    /// Explorer（CabinetWClass）和 UWP（ApplicationFrameWindow）用客户区自绘标题栏，
-    /// 连最小化/最大化/关闭按钮都返回 HTCLIENT。整条标题带拦截会吞掉这些按钮，
-    /// 所以对这类窗口不做客户区拦截，交给原生输入 + 位置兜底。
-    /// </summary>
-    private static bool IsShellHostWindow(IntPtr root)
-    {
-        var name = new StringBuilder(64);
-        NativeMethods.GetClassName(root, name, name.Capacity);
-        return name.ToString() is "CabinetWClass" or "ExploreWClass" or "ApplicationFrameWindow";
-    }
-
     /// <summary>标准标题栏按钮区域（右侧三键 + 左侧图标），即使返回 HTCLIENT 也不接管。</summary>
     private static bool IsCaptionButtonArea(IntPtr root, NativeMethods.POINT point)
     {
@@ -551,8 +568,13 @@ public sealed class ZoneTitleDragHook : IDisposable
         }
 
         var margin = (int)Math.Round(8.0 * dpi / 96.0);
-        return point.X >= visible.Value.Right - (3 * button + margin) ||
-               point.X <= visible.Value.Left + button + margin;
+
+        // 只避开右上角三键（自绘标题栏时它们也返回 HTCLIENT）；
+        // 左侧不要排除：Edge 的垂直标签栏/Explorer 的导航按钮都在左边，
+        // 排除左侧会让这些区域无法开始交换。
+        // 3 × SM_CXSIZE 在高 DPI 下偏大，收一点、封顶 170px，给标题栏留出拖动区。
+        var reserve = Math.Clamp(3 * button + margin, 96, 170);
+        return point.X >= visible.Value.Right - reserve;
     }
 
     /// <summary>把被吞掉的点击补发出去（标签页、按钮等）。</summary>
@@ -561,9 +583,9 @@ public sealed class ZoneTitleDragHook : IDisposable
         // 当前光标就在按下点附近（移动超过阈值就进入拖拽了，不会走到这里）。
         // 用注入点击而不是 PostMessage：XAML/Chromium 的标签页和按钮只认正常的输入队列。
         NativeMethods.mouse_event(
-            NativeMethods.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+            NativeMethods.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, new UIntPtr((ulong)ReplayExtraInfo));
         NativeMethods.mouse_event(
-            NativeMethods.MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+            NativeMethods.MOUSEEVENTF_LEFTUP, 0, 0, 0, new UIntPtr((ulong)ReplayExtraInfo));
     }
 
     private ZonePlacement? FindTarget(NativeMethods.POINT point)
@@ -1121,6 +1143,9 @@ public sealed class ZoneTitleDragHook : IDisposable
 
     public void Dispose()
     {
+        _watchdog?.Dispose();
+        _watchdog = null;
+
         if (_thread != null && _thread.IsAlive)
         {
             NativeMethods.PostThreadMessage(_threadId, 0x0012 /* WM_QUIT */, IntPtr.Zero, IntPtr.Zero);
