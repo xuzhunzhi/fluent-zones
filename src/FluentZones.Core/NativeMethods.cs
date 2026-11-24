@@ -49,7 +49,11 @@ internal static class NativeMethods
     internal const int HTHELP = 21;
     internal const int MK_LBUTTON = 0x0001;
     internal const int SM_CYCAPTION = 4;
+    internal const int SM_CXSIZE = 30;
     internal const int WM_CANCELMODE = 0x001F;
+    internal const uint LLMHF_INJECTED = 0x00000001;
+    internal const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    internal const uint MOUSEEVENTF_LEFTUP = 0x0004;
     internal const uint PW_RENDERFULLCONTENT = 0x00000002;
 
     internal const int WM_PAINT = 0x000F;
@@ -419,6 +423,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    internal static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
 
     [DllImport("user32.dll")]
     internal static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);

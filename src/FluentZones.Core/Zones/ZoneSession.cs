@@ -968,6 +968,26 @@ public sealed class ZoneSession : IDisposable
                     return;
                 }
 
+                // 正在从最小化恢复（样式/可见性还没稳定）：不要发 WM_CANCELMODE，
+                // 也不要把窗口扶正，否则会把任务栏的“还原”动作打断，要点好几次。
+                if (_minimized.Contains(hwnd))
+                {
+                    if (!NativeMethods.IsIconic(hwnd))
+                    {
+                        _minimized.Remove(hwnd);
+                        if (_windowHandles.Contains(hwnd) && Workspace != null)
+                        {
+                            Apply(Workspace);
+                            return;
+                        }
+
+                        _pendingShow.Add(hwnd);
+                    }
+
+                    _ = QueueCandidateSyncAsync(200);
+                    return;
+                }
+
                 // 最大化：保留槽位，但不再摆放/加边框；还原后自动回到槽位。
                 if (NativeMethods.IsZoomed(hwnd))
                 {
@@ -1163,11 +1183,9 @@ public sealed class ZoneSession : IDisposable
         _lastActualSizes.Remove(handle);
         _mismatchCounts.Remove(handle);
 
-        if (_bordered.Remove(handle))
-        {
-            WindowOps.ResetBorderColor(handle);
-            RestoreStyle(handle);
-        }
+        // 不在这里恢复窗口样式：最小化时改 WS_THICKFRAME + FRAMECHANGED 会让
+        // Electron/Chromium 记错还原位置，任务栏要点好几次才能正常显示。
+        // 分区样式保持到退出工作区时再统一恢复。
 
         // 长宽比缺口是灰色占位窗：窗口一最小化先全部收掉，避免留下灰块/闪烁。
         _placeholders.Clear();
@@ -1360,6 +1378,18 @@ public sealed class ZoneSession : IDisposable
         }
 
         NativeMethods.GetCursorPos(out var cursor);
+        var under = NativeMethods.WindowFromPoint(cursor);
+        var root = under == IntPtr.Zero
+            ? IntPtr.Zero
+            : NativeMethods.GetAncestor(under, NativeMethods.GA_ROOT);
+
+        // 光标不在这个窗口上（比如点的是任务栏图标、开始菜单）：不要发 WM_CANCELMODE，
+        // 否则会把任务栏触发的还原动作打断。
+        if (root != handle)
+        {
+            return;
+        }
+
         var visible = WindowOps.GetVisibleBounds(handle);
         LayoutLog.Write(new[]
         {

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace FluentZones.Core;
 
@@ -196,6 +197,14 @@ public sealed class ZoneTitleDragHook : IDisposable
         if (nCode >= 0)
         {
             var info = Marshal.PtrToStructure<NativeMethods.MSLLHOOKSTRUCT>(lParam);
+
+            // 自己补发的点击（以及别的工具注入的输入）直接放行，不能再被本钩子接管，
+            // 否则补发点击会无限循环。
+            if ((info.flags & NativeMethods.LLMHF_INJECTED) != 0)
+            {
+                return NativeMethods.CallNextHookEx(_hook, nCode, wParam, lParam);
+            }
+
             var message = wParam.ToInt32();
 
             if (message == NativeMethods.WM_LBUTTONDOWN)
@@ -410,6 +419,16 @@ public sealed class ZoneTitleDragHook : IDisposable
         // 只接管窗口顶部标题带，松手没拖动就补发点击，标签页/工具按钮照常工作。
         if (code == NativeMethods.HTCLIENT && InCaptionBand(root, point))
         {
+            // Explorer / UWP 的自绘标题栏把最小化/最大化/关闭也画在客户区里，
+            // 整条标题带都吞掉会让右上角三键失效；这类窗口以及标准按钮区域不接管，
+            // 交给位置兜底（系统拖动会被取消并扶正一次）。
+            if (IsShellHostWindow(root) || IsCaptionButtonArea(root, point))
+            {
+                hwnd = IntPtr.Zero;
+                window = null;
+                return false;
+            }
+
             replay = true;
             return true;
         }
@@ -446,32 +465,53 @@ public sealed class ZoneTitleDragHook : IDisposable
         return point.Y >= visible.Value.Top && point.Y < visible.Value.Top + band;
     }
 
-    /// <summary>把被吞掉的点击补发给点击位置下的窗口（标签页、按钮等）。</summary>
-    private void ReplayClick(NativeMethods.POINT point)
+    /// <summary>
+    /// Explorer（CabinetWClass）和 UWP（ApplicationFrameWindow）用客户区自绘标题栏，
+    /// 连最小化/最大化/关闭按钮都返回 HTCLIENT。整条标题带拦截会吞掉这些按钮，
+    /// 所以对这类窗口不做客户区拦截，交给原生输入 + 位置兜底。
+    /// </summary>
+    private static bool IsShellHostWindow(IntPtr root)
     {
-        var target = NativeMethods.WindowFromPoint(point);
-        if (target == IntPtr.Zero)
+        var name = new StringBuilder(64);
+        NativeMethods.GetClassName(root, name, name.Capacity);
+        return name.ToString() is "CabinetWClass" or "ExploreWClass" or "ApplicationFrameWindow";
+    }
+
+    /// <summary>标准标题栏按钮区域（右侧三键 + 左侧图标），即使返回 HTCLIENT 也不接管。</summary>
+    private static bool IsCaptionButtonArea(IntPtr root, NativeMethods.POINT point)
+    {
+        var visible = WindowOps.GetVisibleBounds(root);
+        if (visible == null)
         {
-            return;
+            return false;
         }
 
-        var root = NativeMethods.GetAncestor(target, NativeMethods.GA_ROOT);
-        if (root != IntPtr.Zero)
+        var dpi = NativeMethods.GetDpiForWindow(root);
+        if (dpi == 0)
         {
-            NativeMethods.SetForegroundWindow(root);
+            dpi = 96;
         }
 
-        var client = point;
-        if (!NativeMethods.ScreenToClient(target, ref client))
+        var button = NativeMethods.GetSystemMetricsForDpi(NativeMethods.SM_CXSIZE, dpi);
+        if (button <= 0)
         {
-            return;
+            button = (int)Math.Round(46.0 * dpi / 96.0);
         }
 
-        var lParam = unchecked((IntPtr)((client.Y << 16) | (client.X & 0xFFFF)));
-        NativeMethods.PostMessage(
-            target, NativeMethods.WM_LBUTTONDOWN, new IntPtr(NativeMethods.MK_LBUTTON), lParam);
-        NativeMethods.PostMessage(
-            target, NativeMethods.WM_LBUTTONUP, IntPtr.Zero, lParam);
+        var margin = (int)Math.Round(8.0 * dpi / 96.0);
+        return point.X >= visible.Value.Right - (3 * button + margin) ||
+               point.X <= visible.Value.Left + button + margin;
+    }
+
+    /// <summary>把被吞掉的点击补发出去（标签页、按钮等）。</summary>
+    private static void ReplayClick(NativeMethods.POINT point)
+    {
+        // 当前光标就在按下点附近（移动超过阈值就进入拖拽了，不会走到这里）。
+        // 用注入点击而不是 PostMessage：XAML/Chromium 的标签页和按钮只认正常的输入队列。
+        NativeMethods.mouse_event(
+            NativeMethods.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+        NativeMethods.mouse_event(
+            NativeMethods.MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
     }
 
     private ZonePlacement? FindTarget(NativeMethods.POINT point)
