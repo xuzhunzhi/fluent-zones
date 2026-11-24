@@ -977,7 +977,8 @@ public sealed class ZoneSession : IDisposable
                         _minimized.Remove(hwnd);
                         if (_windowHandles.Contains(hwnd) && Workspace != null)
                         {
-                            Apply(Workspace);
+                            // 等还原动画结束再扶正，别在动画中间把窗口搬走。
+                            _ = QueueRealignAsync(200, force: true);
                             return;
                         }
 
