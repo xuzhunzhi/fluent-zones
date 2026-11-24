@@ -860,6 +860,39 @@ public sealed class ZoneWorkspace
         return result;
     }
 
+    /// <summary>屏幕坐标是否落在某条分隔线的可拖拽命中区里（±10px）。</summary>
+    public bool HitDivider(int x, int y, int radius = 10)
+    {
+        foreach (var divider in Dividers())
+        {
+            var region = divider.Region;
+            if (divider.Horizontal)
+            {
+                var usable = Math.Max(region.Width - Gap, 2);
+                var firstWidth = (int)Math.Round(usable * divider.Node.Ratio);
+                var center = region.Left + firstWidth + Gap / 2;
+                if (x >= center - radius && x <= center + radius &&
+                    y >= region.Top && y <= region.Bottom)
+                {
+                    return true;
+                }
+            }
+            else
+            {
+                var usable = Math.Max(region.Height - Gap, 2);
+                var firstHeight = (int)Math.Round(usable * divider.Node.Ratio);
+                var center = region.Top + firstHeight + Gap / 2;
+                if (y >= center - radius && y <= center + radius &&
+                    x >= region.Left && x <= region.Right)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private void CollectDividers(ZoneNode node, WindowRect rect, List<ZoneDivider> result)
     {
         if (node.Window != null)

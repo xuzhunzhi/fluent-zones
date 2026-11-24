@@ -438,6 +438,13 @@ public sealed class ZoneTitleDragHook : IDisposable
             return false;
         }
 
+        // 分隔线附近不接管：这里要让 ZoneDragHook 的拖拽优先，
+        // 否则窗口缩放边框在缝隙里会先被我们吞掉，分隔线就拖不动了。
+        if (workspace.HitDivider(point.X, point.Y))
+        {
+            return false;
+        }
+
         var under = NativeMethods.WindowFromPoint(point);
         if (under == IntPtr.Zero)
         {
