@@ -17,6 +17,9 @@ public sealed class ZoneWorkspace
 
     public WindowRect Area { get; }
 
+    /// <summary>用同一棵切分树（同一组比例）换一个工作区矩形，用于任务栏动态避让。</summary>
+    public ZoneWorkspace WithArea(WindowRect area) => new(Root, area, Gap);
+
     public int Gap { get; private set; }
 
     /// <summary>

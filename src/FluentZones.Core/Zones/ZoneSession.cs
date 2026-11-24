@@ -58,6 +58,7 @@ public sealed class ZoneSession : IDisposable
     private ZoneDragHook? _dragHook;
     private ZoneTitleDragHook? _titleHook;
     private ZoneHoverWatcher? _hoverWatcher;
+    private TaskbarWatcher? _taskbarWatcher;
     private WinEventWatcher? _watcher;
     private bool _syncQueued;
     private bool _candidateSyncQueued;
@@ -329,6 +330,7 @@ public sealed class ZoneSession : IDisposable
         EnsureTitleHook();
         Apply(workspace);
         StartWatch();
+        EnsureTaskbarWatcher();
         return true;
     }
 
@@ -344,6 +346,8 @@ public sealed class ZoneSession : IDisposable
         _titleHook = null;
         _hoverWatcher?.Dispose();
         _hoverWatcher = null;
+        _taskbarWatcher?.Dispose();
+        _taskbarWatcher = null;
     }
 
     private void Close(bool notifyStatus)
@@ -355,6 +359,7 @@ public sealed class ZoneSession : IDisposable
         _dragHook?.Hide();
         _titleHook?.Hide();
         _hoverWatcher?.Stop();
+        _taskbarWatcher?.Stop();
         Workspace = null;
         _swapInProgress = false;
         _whitelistIgnoredNotified = false;
@@ -826,6 +831,50 @@ public sealed class ZoneSession : IDisposable
             StatusRequested?.Invoke(
                 "分区模式：标题栏交换不可用（" + ex.Message + "）", ZoneStatusLevel.Warn);
         }
+    }
+
+    private void EnsureTaskbarWatcher()
+    {
+        if (_taskbarWatcher == null)
+        {
+            _taskbarWatcher = new TaskbarWatcher(
+                () => Monitor,
+                () => Workspace != null,
+                () => _swapInProgress ||
+                      _dragHook?.IsDragging == true ||
+                      (IsInteractionBusy?.Invoke() ?? false),
+                () => Workspace?.Area,
+                ApplyArea,
+                _postToUi);
+        }
+
+        _taskbarWatcher.Start();
+    }
+
+    /// <summary>
+    /// 任务栏滑出/收起后更新工作区矩形。只换 Area，不动切分树的比例；
+    /// 真正摆放仍走 <see cref="Apply"/>，所以长宽比锁定、占位窗等逻辑一致。
+    /// </summary>
+    private bool ApplyArea(WindowRect area)
+    {
+        if (Workspace == null || _swapInProgress ||
+            _dragHook?.IsDragging == true ||
+            (IsInteractionBusy?.Invoke() ?? false))
+        {
+            return false;
+        }
+
+        if (Workspace.Area == area)
+        {
+            return true;
+        }
+
+        var updated = Workspace.WithArea(area);
+        updated.FitToMinimumSizes();
+        Workspace = updated;
+        _dragHook?.Refresh(updated);
+        Apply(updated);
+        return true;
     }
 
     private void OnTitleWindowDropped(WindowInfo source, WindowInfo target)
