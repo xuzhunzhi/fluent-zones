@@ -709,15 +709,16 @@ public sealed class ZoneSession : IDisposable
         Math.Max(window.MinHeight, 90) > area.Height;
 
     /// <summary>
-    /// 工作区窗口：套上 DWM 强调色边框，并临时去掉 WS_THICKFRAME——
-    /// 这样拖窗口自己的边不会缩放，只能拖窗口之间的分隔线。
+    /// 工作区窗口：只套 DWM 强调色边框，**不改窗口样式**。
+    /// 缩放边框由 <see cref="ZoneTitleDragHook"/> 在按下时吞掉，无需移除 WS_THICKFRAME；
+    /// 保留原生样式可以让 Chromium 的鼠标进入/离开跟踪正常工作（Edge 垂直标签栏
+    /// 不会卡在展开状态），也避免最小化/还原时改样式把窗口弄乱。
     /// </summary>
     private void SyncBorders(IReadOnlyList<ZonePlacement> placements)
     {
         var handles = placements.Select(p => p.Window.Handle).ToHashSet();
 
-        // 最大化的窗口故意不参与摆放（槽位保留），不能把它当成“离开工作区”而恢复样式：
-        // 把 WS_THICKFRAME 加回去会让它立即退出最大化。最小化窗口同理，等恢复后再说。
+        // 最大化的窗口故意不参与摆放（槽位保留），不能把它当成“离开工作区”而恢复样式。
         foreach (var stale in _bordered
                      .Where(h => !handles.Contains(h) &&
                                  !_maximized.Contains(h) &&
@@ -725,14 +726,13 @@ public sealed class ZoneSession : IDisposable
                      .ToList())
         {
             WindowOps.ResetBorderColor(stale);
-            RestoreStyle(stale);
+            RestoreStyle(stale);   // 兼容旧版本留下的“已去掉缩放边框”记录
             _bordered.Remove(stale);
         }
 
         foreach (var handle in handles.Where(h => !_bordered.Contains(h)))
         {
             WindowOps.SetBorderColor(handle, WindowOps.ZoneBorderColor);
-            _styles[handle] = WindowOps.RemoveResizeBorder(handle);
             _bordered.Add(handle);
         }
 

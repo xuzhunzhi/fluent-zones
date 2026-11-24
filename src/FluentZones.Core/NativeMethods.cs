@@ -61,6 +61,7 @@ internal static class NativeMethods
     internal const int WM_RBUTTONUP = 0x0205;
     internal const int WM_LBUTTONDBLCLK = 0x0203;
     internal const int WM_SETCURSOR = 0x0020;
+    internal const int WM_MOUSELEAVE = 0x02A3;
     internal const int WM_NCHITTEST = 0x0084;
     internal const int WM_ERASEBKGND = 0x0014;
     internal const int HTTRANSPARENT = -1;

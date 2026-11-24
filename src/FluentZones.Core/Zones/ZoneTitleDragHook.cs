@@ -48,6 +48,7 @@ public sealed class ZoneTitleDragHook : IDisposable
     private bool _replayOnClick;
     private bool _blockOnly;
     private bool _swallowNextUp;
+    private IntPtr _lastHoverRoot;
     private List<ZonePlacement>? _dragPlacements;
     private WindowRect _dragArea;
     private IntPtr _lastClickWindow;
@@ -104,6 +105,7 @@ public sealed class ZoneTitleDragHook : IDisposable
     /// <summary>退出工作区时清理半透明缩略图/灰色覆盖层和未完成的拖拽。</summary>
     public void Hide()
     {
+        _lastHoverRoot = IntPtr.Zero;
         if (_thread != null)
         {
             NativeMethods.PostThreadMessage(_threadId, WmHide, IntPtr.Zero, IntPtr.Zero);
@@ -206,6 +208,11 @@ public sealed class ZoneTitleDragHook : IDisposable
             }
 
             var message = wParam.ToInt32();
+
+            if (message == NativeMethods.WM_MOUSEMOVE)
+            {
+                TrackHoverLeave(info.pt);
+            }
 
             if (message == NativeMethods.WM_LBUTTONDOWN)
             {
@@ -310,6 +317,51 @@ public sealed class ZoneTitleDragHook : IDisposable
         }
 
         return NativeMethods.CallNextHookEx(_hook, nCode, wParam, lParam);
+    }
+
+    /// <summary>
+    /// 鼠标从一个工作区窗口移到别处时，补发一次 <c>WM_MOUSELEAVE</c>。
+    /// Edge/Chromium 的垂直标签栏靠鼠标离开通知收起；窗口贴边、快速跨窗口或
+    /// 系统没发 leave 时，标签栏会卡在展开状态。
+    /// </summary>
+    private void TrackHoverLeave(NativeMethods.POINT point)
+    {
+        if (_pendingWindow != IntPtr.Zero)
+        {
+            return;
+        }
+
+        var workspace = _getWorkspace();
+        if (workspace == null)
+        {
+            _lastHoverRoot = IntPtr.Zero;
+            return;
+        }
+
+        var under = NativeMethods.WindowFromPoint(point);
+        var root = under == IntPtr.Zero
+            ? IntPtr.Zero
+            : NativeMethods.GetAncestor(under, NativeMethods.GA_ROOT);
+
+        if (root == _lastHoverRoot)
+        {
+            return;
+        }
+
+        var previous = _lastHoverRoot;
+        _lastHoverRoot = root;
+
+        if (previous == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (!workspace.WindowsInOrder().Any(w => w.Handle == previous))
+        {
+            return;
+        }
+
+        NativeMethods.PostMessage(previous, NativeMethods.WM_MOUSELEAVE, IntPtr.Zero, IntPtr.Zero);
     }
 
     private void HandleClick(IntPtr hwnd)
