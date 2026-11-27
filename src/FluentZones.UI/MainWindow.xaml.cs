@@ -86,7 +86,9 @@ public sealed partial class MainWindow : Window
             getColumnsLimit: () => _settings.ColumnsLimit,
             postToUi: PostToUi,
             getWhitelist: () => _settings.ZoneWhitelist);
-        _zones.PlaceholdersEnabled = true;
+        // 长宽比适配留下的条带不再创建深色占位窗：占位窗会被反复 Apply
+        // 创建/销毁，屏幕上的黑边会闪。留空显示桌面更稳定。
+        _zones.PlaceholdersEnabled = false;
         _zones.PlaceRequested += placements =>
             _layouts.PlaceRects(placements.Select(p => (p.Window.Handle, p.Rect)));
         _zones.StatusRequested += OnZoneStatus;

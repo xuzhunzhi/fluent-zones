@@ -10,6 +10,7 @@ public readonly record struct ZonePlaceholderSpec(WindowRect Rect, string Label)
 public sealed class ZonePlaceholderManager : IDisposable
 {
     private readonly List<IntPtr> _handles = new();
+    private readonly List<ZonePlaceholderSpec> _last = new();
 
     public IReadOnlyList<IntPtr> Handles => _handles;
 
@@ -17,13 +18,37 @@ public sealed class ZonePlaceholderManager : IDisposable
 
     public void Update(IReadOnlyList<ZonePlaceholderSpec>? specs)
     {
+        var next = specs ?? Array.Empty<ZonePlaceholderSpec>();
+
+        // 占位窗的几何没变就不要销毁重建：app 自己 SetWindowPos 会触发 LOCATIONCHANGE，
+        // 反复 Apply 时 Clear+Create 会让屏幕上的黑带闪烁。标题变化不影响外观，也不重建。
+        if (_last.Count == next.Count)
+        {
+            var same = true;
+            for (var i = 0; i < next.Count; i++)
+            {
+                if (_last[i].Rect != next[i].Rect)
+                {
+                    same = false;
+                    break;
+                }
+            }
+
+            if (same)
+            {
+                return;
+            }
+        }
+
         Clear();
-        if (!Enabled || specs == null)
+        _last.AddRange(next);
+
+        if (!Enabled)
         {
             return;
         }
 
-        foreach (var spec in specs)
+        foreach (var spec in next)
         {
             if (spec.Rect.Width < ZoneAspectFit.MinGap ||
                 spec.Rect.Height < ZoneAspectFit.MinGap)
@@ -47,6 +72,7 @@ public sealed class ZonePlaceholderManager : IDisposable
         }
 
         _handles.Clear();
+        _last.Clear();
     }
 
     public void Dispose() => Clear();

@@ -48,6 +48,9 @@ public sealed class ZoneSession : IDisposable
     private readonly HashSet<IntPtr> _minimized = new();
     private readonly HashSet<IntPtr> _maximized = new();
 
+    // 被最小尺寸卡住、不再参与 realign 的窗口：避免反复“清锁定→重排→再锁定”导致占位窗闪烁。
+    private readonly HashSet<IntPtr> _pinnedByMin = new();
+
     // 被用户拖到其它显示器的窗口：拖回来时允许重新入槽。
     private readonly HashSet<IntPtr> _detached = new();
     private readonly HashSet<IntPtr> _resumeMaxQueued = new();
@@ -180,6 +183,7 @@ public sealed class ZoneSession : IDisposable
         // 仍处于最小化的窗口保持挂起，等它还原后再入槽。
         _maximized.Clear();
         _minimized.RemoveWhere(h => !NativeMethods.IsWindow(h) || !NativeMethods.IsIconic(h));
+        _pinnedByMin.Clear();
 
         windows = await FilterUnresizableAsync(windows, monitor);
 
@@ -375,6 +379,7 @@ public sealed class ZoneSession : IDisposable
         _detached.Clear();
         _resumeMaxQueued.Clear();
         _nativeMoveHandled.Clear();
+        _pinnedByMin.Clear();
         _minimizeSyncQueued = false;
         _snappingBack = false;
         RestoreWhitelistTopmost();
@@ -1571,6 +1576,11 @@ public sealed class ZoneSession : IDisposable
                 continue;
             }
 
+            if (_pinnedByMin.Contains(placement.Window.Handle))
+            {
+                continue;
+            }
+
             var actual = WindowOps.GetVisibleBounds(placement.Window.Handle);
             if (actual == null)
             {
@@ -1612,17 +1622,11 @@ public sealed class ZoneSession : IDisposable
                 }
 
                 _aspectCounts.Remove(handle);
-                _mismatchCounts.TryGetValue(handle, out var pinnedCount);
-                pinnedCount++;
-                _mismatchCounts[handle] = pinnedCount;
-                if (pinnedCount >= 2)
-                {
-                    _mismatchCounts.Remove(handle);
-                    await HandleAdaptiveUnresizableAsync(placement.Window);
-                    await SyncAsync();
-                    return;
-                }
+                _mismatchCounts.Remove(handle);
 
+                // 只按完整槽位重排一次；之后不再对这条窗口做 realign，
+                // 否则会在“适配矩形 / 完整槽位”之间来回切换，占位窗反复创建销毁。
+                _pinnedByMin.Add(handle);
                 _lastRealign = DateTime.UtcNow;
                 Apply(Workspace);
                 return;
