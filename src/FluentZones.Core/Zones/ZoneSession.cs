@@ -1591,6 +1591,43 @@ public sealed class ZoneSession : IDisposable
             }
 
             var handle = placement.Window.Handle;
+
+            // 有些窗口只是被自己的最小尺寸卡住（例如 Agent WeChat 的内容区），
+            // 并不是真的长宽比锁定。和“未适配的槽位”比较：实际尺寸贴着最小尺寸、
+            // 槽位又更大时，先清掉锁定按槽位再试；连续两次还不动再按固定大小处理。
+            var slot = Workspace.Compute()
+                .FirstOrDefault(p => p.Window.Handle == handle)?.Rect;
+            var minWidth = Math.Max(placement.Window.MinWidth, 0);
+            var minHeight = Math.Max(placement.Window.MinHeight, 0);
+            var pinnedByMin =
+                slot is { } s &&
+                ((minWidth > 0 && actual.Value.Width <= minWidth + 4 && s.Width > actual.Value.Width + 4) ||
+                 (minHeight > 0 && actual.Value.Height <= minHeight + 4 && s.Height > actual.Value.Height + 4));
+
+            if (pinnedByMin)
+            {
+                if (_aspectLocked.Remove(handle))
+                {
+                    _lastActualSizes.Remove(handle);
+                }
+
+                _aspectCounts.Remove(handle);
+                _mismatchCounts.TryGetValue(handle, out var pinnedCount);
+                pinnedCount++;
+                _mismatchCounts[handle] = pinnedCount;
+                if (pinnedCount >= 2)
+                {
+                    _mismatchCounts.Remove(handle);
+                    await HandleAdaptiveUnresizableAsync(placement.Window);
+                    await SyncAsync();
+                    return;
+                }
+
+                _lastRealign = DateTime.UtcNow;
+                Apply(Workspace);
+                return;
+            }
+
             if (_aspectLocked.ContainsKey(handle))
             {
                 _lastRealign = DateTime.UtcNow;
