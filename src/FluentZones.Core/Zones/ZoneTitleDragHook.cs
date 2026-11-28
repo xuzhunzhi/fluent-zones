@@ -438,13 +438,6 @@ public sealed class ZoneTitleDragHook : IDisposable
             return false;
         }
 
-        // 分隔线附近不接管：这里要让 ZoneDragHook 的拖拽优先，
-        // 否则窗口缩放边框在缝隙里会先被我们吞掉，分隔线就拖不动了。
-        if (workspace.HitDivider(point.X, point.Y))
-        {
-            return false;
-        }
-
         var under = NativeMethods.WindowFromPoint(point);
         if (under == IntPtr.Zero)
         {
@@ -495,11 +488,19 @@ public sealed class ZoneTitleDragHook : IDisposable
             return false;
         }
 
-        // 缩放边框：吞掉按下，阻止系统原生 resize/移动；不进入交换预览。
+        // 缩放边框：吞掉按下，阻止系统原生 resize/移动；但贴着分隔线时让给 ZoneDragHook，
+        // 否则窗口边缘会变成原生缩放，工作区大小反而不动。
         if (code is NativeMethods.HTLEFT or NativeMethods.HTRIGHT or
             NativeMethods.HTTOP or NativeMethods.HTTOPLEFT or NativeMethods.HTTOPRIGHT or
             NativeMethods.HTBOTTOM or NativeMethods.HTBOTTOMLEFT or NativeMethods.HTBOTTOMRIGHT)
         {
+            if (workspace.HitDivider(point.X, point.Y))
+            {
+                hwnd = IntPtr.Zero;
+                window = null;
+                return false;
+            }
+
             replay = false;
             block = true;
             return true;

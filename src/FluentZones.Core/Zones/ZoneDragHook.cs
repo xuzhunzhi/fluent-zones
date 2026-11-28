@@ -125,9 +125,12 @@ public sealed class ZoneDragHook : IDisposable
             {
                 var node = FindDivider(info.pt.X, info.pt.Y);
 
-                // 只有落在窗口之间的缝隙里才抢点击；落在窗口本身（标题栏、关闭按钮、客户区）一律放行，
-                // 否则会把别的窗口的点击吃掉，甚至让它停在“按下了但没收到松开”的状态。
-                if (node != null && !IsOverWindow(info.pt.X, info.pt.Y))
+                // 落在窗口之间的缝隙里：抢点击。
+                // 落在窗口的缩放边框上（贴着分隔线）：也抢——否则会变成原生窗口缩放，
+                // 工作区大小反而不动。窗口的标题栏/客户区仍然放行。
+                if (node != null &&
+                    (!IsOverWindow(info.pt.X, info.pt.Y) ||
+                     IsOverResizeBorder(info.pt.X, info.pt.Y)))
                 {
                     lock (_gate)
                     {
@@ -230,6 +233,36 @@ public sealed class ZoneDragHook : IDisposable
         return NativeMethods.GetWindowRect(root, out var rect) &&
                x >= rect.Left - 1 && x < rect.Right + 1 &&
                y >= rect.Top - 1 && y < rect.Bottom + 1;
+    }
+
+    /// <summary>点是否落在窗口的原生缩放边框上（贴着分隔线时优先按分隔线处理）。</summary>
+    private static bool IsOverResizeBorder(int x, int y)
+    {
+        var hwnd = NativeMethods.WindowFromPoint(new NativeMethods.POINT { X = x, Y = y });
+        if (hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var root = NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT);
+        if (root == IntPtr.Zero || NativeMethods.IsHungAppWindow(root))
+        {
+            return false;
+        }
+
+        var lParam = unchecked((IntPtr)((y << 16) | (x & 0xFFFF)));
+        var result = NativeMethods.SendMessageTimeout(
+            root, NativeMethods.WM_NCHITTEST, IntPtr.Zero, lParam,
+            NativeMethods.SMTO_ABORTIFHUNG, 50, out var hit);
+        if (result == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var code = (int)hit.ToInt64();
+        return code is NativeMethods.HTLEFT or NativeMethods.HTRIGHT or
+            NativeMethods.HTTOP or NativeMethods.HTTOPLEFT or NativeMethods.HTTOPRIGHT or
+            NativeMethods.HTBOTTOM or NativeMethods.HTBOTTOMLEFT or NativeMethods.HTBOTTOMRIGHT;
     }
 
     private ZoneNode? FindDivider(int x, int y)    {
