@@ -580,8 +580,11 @@ public sealed class ZoneTitleDragHook : IDisposable
         // 只避开右上角三键（自绘标题栏时它们也返回 HTCLIENT）；
         // 左侧不要排除：Edge 的垂直标签栏/Explorer 的导航按钮都在左边，
         // 排除左侧会让这些区域无法开始交换。
-        // 3 × SM_CXSIZE 在高 DPI 下偏大，收一点、封顶 170px，给标题栏留出拖动区。
-        var reserve = Math.Clamp(3 * button + margin, 96, 170);
+        // 三键宽度不能只按 SM_CXSIZE 算：Windows 11 的自绘按钮在高 DPI 下
+        // 比 SM_CXSIZE 更宽，按 150 逻辑像素兜底，避免最小化按钮落在拦截区里。
+        var reserve = Math.Max(
+            3 * button + margin,
+            (int)Math.Round(150.0 * dpi / 96.0));
         return point.X >= visible.Value.Right - reserve;
     }
 
