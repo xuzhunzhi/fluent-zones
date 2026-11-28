@@ -720,7 +720,25 @@ public sealed class LayoutService
 
             if (kind == LayoutKind.Cascade)
             {
-                rects = Cascade(ordered.Count, area);
+                var cascadeDpi = ordered.Max(w => w.Dpi);
+                if (cascadeDpi < 96)
+                {
+                    cascadeDpi = 96;
+                }
+
+                var caption = NativeMethods.GetSystemMetricsForDpi(
+                    NativeMethods.SM_CYCAPTION, (uint)cascadeDpi);
+                if (caption <= 0)
+                {
+                    caption = 23;
+                }
+
+                // 错开至少一个标题栏高度：窗口数量多时仍尽量保证每个标题栏露出来。
+                // 使用 40 逻辑像素兜底，覆盖 Edge/Typora 这类加高的自定义标题栏。
+                var step = Math.Max(
+                    caption + 8,
+                    (int)Math.Round(40.0 * cascadeDpi / 96.0));
+                rects = Cascade(ordered.Count, area, step);
             }
             else
             {
@@ -901,7 +919,7 @@ public sealed class LayoutService
         }
     }
 
-    private static List<WindowRect> Cascade(int count, WindowRect area)
+    private static List<WindowRect> Cascade(int count, WindowRect area, int requestedStep)
     {
         var result = new List<WindowRect>(count);
         if (count == 1)
@@ -915,12 +933,16 @@ public sealed class LayoutService
 
         var availX = area.Width - width;
         var availY = area.Height - height;
-        var step = Math.Min(30, Math.Min(availX, availY) / (count - 1));
-        step = Math.Max(step, 0);
+        var maxStep = Math.Max(0, Math.Min(availX, availY) / (count - 1));
+        var step = Math.Clamp(requestedStep, 0, maxStep);
 
+        // ordered 是前台优先：前台窗口放右下并保持最上层，后面的窗口向左上错开，
+        // 这样每一层的标题栏都露在前一层上面，而不是被前台窗口整块盖住。
         for (var i = 0; i < count; i++)
         {
-            result.Add(new WindowRect(area.Left + i * step, area.Top + i * step, width, height));
+            var offset = (count - 1 - i) * step;
+            result.Add(new WindowRect(
+                area.Left + offset, area.Top + offset, width, height));
         }
 
         return result;
